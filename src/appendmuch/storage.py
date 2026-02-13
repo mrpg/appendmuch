@@ -69,6 +69,9 @@ class Store:
         self.driver.codec = self.codec
         self.driver.replace_predicate = self.replace_predicate
 
+        self.driver.ensure()
+        self.load()
+
     def storage(
         self,
         *namespace: str,

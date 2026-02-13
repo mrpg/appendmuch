@@ -11,10 +11,9 @@ pip install "appendmuch @ git+https://github.com/mrpg/appendmuch.git@master"
 ## Quick start
 
 ```python
-from appendmuch import Memory, Store
+from appendmuch import Memory, Sqlite3, Store
 
-store = Store(Memory())
-store.driver.ensure()
+store = Store(Memory())  # Or Store(Sqlite3("db.sqlite3"))
 
 # Storage instances provide attribute-based access to namespaced data
 player = store.storage("game", "player1")
