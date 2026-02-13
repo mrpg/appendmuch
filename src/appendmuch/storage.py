@@ -195,97 +195,124 @@ class Store:
         dbns = tuple2dbns(namespace) if namespace else ""
 
         match action, key, value:
-            # WRITE: insert
             case "insert", _, _ if isinstance(ctx, str):
-                self.driver.insert(dbns, key, value, ctx)
-                nested_dict = self.get_namespace(namespace, create=True)
-
-                if nested_dict is not None and key not in nested_dict:
-                    nested_dict[key] = SortedList(key=lambda v: v.time)
-
-                new_value = Value(
-                    self.driver.now,
-                    False,
-                    safe_deepcopy(value, immutable),
-                    ctx,
-                )
-
-                if nested_dict is not None:
-                    if self.replace_predicate(dbns, key):
-                        nested_dict[key] = SortedList([new_value], key=lambda v: v.time)
-                    else:
-                        nested_dict[key].add(new_value)
-
-                if self.on_change is not None:
-                    self.on_change(namespace, key, new_value)
-
-                rval = value
-
-            # WRITE: delete (tombstone)
+                rval = self.perform_insert(namespace, dbns, key, value, ctx, immutable)
             case "delete", _, None if isinstance(ctx, str):
-                self.driver.delete(dbns, key, ctx)
-                nested_dict = self.get_namespace(namespace, create=True)
-                if nested_dict is not None and key not in nested_dict:
-                    nested_dict[key] = SortedList(key=lambda v: v.time)
-
-                tombstone = Value(self.driver.now, True, None, ctx)
-                if nested_dict is not None:
-                    nested_dict[key].add(tombstone)
-
-                if self.on_change is not None:
-                    self.on_change(namespace, key, tombstone)
-
-            # READ: get current value
+                self.perform_delete(namespace, dbns, key, ctx)
             case "get", _, None:
                 rval = self.get_current_value(namespace, key)
-
-            # READ: field history
             case "get_field_history", _, None:
-                current = self.get_namespace(namespace)
-                if current and isinstance(current, dict) and key in current:
-                    rval = current[key]
-                else:
-                    rval = SortedList(key=lambda v: v.time)
-
-            # READ: list fields
+                rval = self.get_field_history(namespace, key)
             case "fields", "", None:
-                current = self.get_namespace(namespace)
-                if current and isinstance(current, dict):
-                    rval = []
-                    for field in current:
-                        if (
-                            hasattr(current[field], "__iter__")
-                            and current[field]
-                            and not current[field][-1].unavailable
-                        ):
-                            rval.append(field)
-                else:
-                    rval = []
-
-            # READ: has any fields
+                rval = self.list_fields(namespace)
             case "has_fields", "", None:
-                current = self.get_namespace(namespace)
-                if current and isinstance(current, dict):
-                    rval = any(
-                        hasattr(values, "__iter__") and values and not values[-1].unavailable
-                        for values in current.values()
-                    )
-                else:
-                    rval = False
-
-            # READ: full history
+                rval = self.check_has_fields(namespace)
             case "history", "", None:
-                current = self.get_namespace(namespace)
-                rval = current if current and isinstance(current, dict) else {}
-
-            # READ: contextual query (within)
+                rval = self.get_full_history(namespace)
             case "get_within_context", _, None if isinstance(extra, dict):
                 rval = self.resolve_within_context(namespace, key, extra)
-
             case _, _, _:
                 raise NotImplementedError
 
         return rval
+
+    def perform_insert(
+        self,
+        namespace: tuple[str, ...],
+        dbns: str,
+        key: str,
+        value: Any,
+        ctx: str,
+        immutable: tuple[type, ...],
+    ) -> Any:
+        self.driver.insert(dbns, key, value, ctx)
+        nested_dict = self.get_namespace(namespace, create=True)
+
+        if nested_dict is not None and key not in nested_dict:
+            nested_dict[key] = SortedList(key=lambda v: v.time)
+
+        new_value = Value(
+            self.driver.now,
+            False,
+            safe_deepcopy(value, immutable),
+            ctx,
+        )
+
+        if nested_dict is not None:
+            if self.replace_predicate(dbns, key):
+                nested_dict[key] = SortedList([new_value], key=lambda v: v.time)
+            else:
+                nested_dict[key].add(new_value)
+
+        if self.on_change is not None:
+            self.on_change(namespace, key, new_value)
+
+        return value
+
+    def perform_delete(
+        self,
+        namespace: tuple[str, ...],
+        dbns: str,
+        key: str,
+        ctx: str,
+    ) -> None:
+        self.driver.delete(dbns, key, ctx)
+        nested_dict = self.get_namespace(namespace, create=True)
+        if nested_dict is not None and key not in nested_dict:
+            nested_dict[key] = SortedList(key=lambda v: v.time)
+
+        tombstone = Value(self.driver.now, True, None, ctx)
+        if nested_dict is not None:
+            nested_dict[key].add(tombstone)
+
+        if self.on_change is not None:
+            self.on_change(namespace, key, tombstone)
+
+    def get_field_history(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+    ) -> Any:
+        current = self.get_namespace(namespace)
+        if current and isinstance(current, dict) and key in current:
+            return current[key]
+        return SortedList(key=lambda v: v.time)
+
+    def list_fields(
+        self,
+        namespace: tuple[str, ...],
+    ) -> list[str]:
+        current = self.get_namespace(namespace)
+        if current and isinstance(current, dict):
+            result: list[str] = []
+            for field in current:
+                if (
+                    hasattr(current[field], "__iter__")
+                    and current[field]
+                    and not current[field][-1].unavailable
+                ):
+                    result.append(field)
+            return result
+        return []
+
+    def check_has_fields(
+        self,
+        namespace: tuple[str, ...],
+    ) -> bool:
+        current = self.get_namespace(namespace)
+        if current and isinstance(current, dict):
+            return any(
+                hasattr(values, "__iter__") and values and not values[-1].unavailable
+                for values in current.values()
+            )
+        return False
+
+    def get_full_history(
+        self,
+        namespace: tuple[str, ...],
+    ) -> dict[str, Any]:
+        current = self.get_namespace(namespace)
+        return current if current and isinstance(current, dict) else {}
 
     def resolve_within_context(
         self,
