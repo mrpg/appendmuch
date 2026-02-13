@@ -45,10 +45,7 @@ def flatten(d: dict[str, Any], trail: tuple[str, ...] = ()) -> dict[tuple[str, .
 
 
 class Store:
-    """Central configuration and state holder for an append-only log.
-
-    Replaces module-level globals (DATABASE, MEMORY_HISTORY) with an instance.
-    """
+    """Central configuration and state holder for an append-only log."""
 
     def __init__(
         self,
