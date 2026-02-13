@@ -10,7 +10,7 @@ import copy
 from collections.abc import Callable, Iterator, Sequence
 from inspect import currentframe
 from time import time
-from typing import Any, Literal, cast
+from typing import Any, Literal, Self, cast
 
 from sortedcontainers import SortedList
 
@@ -424,7 +424,7 @@ class Storage:
         self,
         *namespace: str,
         store: Store,
-        virtual: dict[str, Callable[["Storage"], Any]] | None = None,
+        virtual: dict[str, Callable[[Self], Any]] | None = None,
     ) -> None:
         ensure(
             all(type(t) is str and valid_token(t) for t in namespace),
@@ -566,7 +566,7 @@ class Storage:
         self.__explicitly_set__.discard(name)
         self.__assigned_values__.pop(name, None)
 
-    def __enter__(self) -> "Storage":
+    def __enter__(self) -> Self:
         self.__contexts__ += 1
         self.__field_cache__.clear()
         self.__accessed_fields__.clear()
