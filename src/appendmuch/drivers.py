@@ -32,8 +32,8 @@ def _insert_pg(tbl: str) -> str:
 
 
 def _update_pg(tbl: str) -> str:
-    return (  # nosec B608
-        f"UPDATE {tbl} SET value = %s, created_at = %s, context = %s"
+    return (
+        f"UPDATE {tbl} SET value = %s, created_at = %s, context = %s"  # nosec B608
         f" WHERE namespace = %s AND field = %s"
     )
 
