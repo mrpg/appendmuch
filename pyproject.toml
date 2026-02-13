@@ -29,6 +29,7 @@ dev = [
     "pytest-cov>=6.0",
     "mypy>=1.10",
     "ruff>=0.9",
+    "isort>=7.0.0",
     "black>=24.0",
     "bandit>=1.7",
     "sortedcontainers-stubs>=2.4",
