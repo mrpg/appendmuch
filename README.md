@@ -73,7 +73,7 @@ A `Value` contains a `context`, indicating the approximate code location that tr
 
 `Storage` instances can be initialized with virtual fields that function similar to `@property`s. This is a simple mechanism to enable more ORM-like behavior.
 
-```player
+```python
 # Define helper
 def get_group(player):
     return store.storage("game", player._group)
