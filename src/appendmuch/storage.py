@@ -492,6 +492,17 @@ class Storage:
                 AttributeError,
                 f"Attribute '{name}' is not an internal attribute",
             )
+            ensure(
+                name
+                not in (
+                    "name",
+                    "__namespace__",
+                    "__store__",
+                )
+                or not hasattr(self, name),
+                AttributeError,
+                f"Attribute '{name}' is reserved and cannot be changed",
+            )
             return object.__setattr__(self, name, value)
 
         virtual = object.__getattribute__(self, "__virtual__")
