@@ -115,7 +115,7 @@ with player3.group as g:
 
 The following types can be stored out-of-the-box: `bool`, `int`, `float`, `str`, `tuple`, `bytes`, `complex`, `None`, `decimal.Decimal`, `frozenset`, `datetime.datetime`, `datetime.date`, `datetime.time`, `uuid.UUID`, `list`, `dict`, `bytearray`, `set`, `random.Random`.
 
-**Note**: `orjson` imposes some constraints on some particular values of some types. For example, `math.inf` is unavailable, and so are `dict`s with non-`str` keys. The same applies to certain uncommonly used subtypes of generics; for example, `list[random.Random]` is unavailable.
+**Note**: `orjson` imposes some constraints on some particular values of some types. For example, `math.inf` is unavailable, and so are `dict`s with non-`str` keys. The same applies to certain uncommonly used subtypes of generics; for example, `list[random.Random]` is unavailable. An Exception will be raised if a value cannot be encoded, or if the encoded data does not decode back to the original value (as long as `Codec.vigilant == True`, which is the default).
 
 Support for other types can be registered using a custom codec. [Example.](https://github.com/mrpg/uproot/blob/main/src/uproot/stable.py) It would also be possible to write a codec that uses `pickle`, or similar, to handle more types.
 

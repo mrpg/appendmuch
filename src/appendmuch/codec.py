@@ -32,6 +32,7 @@ class Codec:
         self.type_to_id: dict[type, int] = {}
         self.id_to_type: dict[int, type] = {}
         self.mutable_ids: set[int] = set()
+        self.vigilant = True
 
         self.register_builtins()
 
@@ -76,7 +77,12 @@ class Codec:
     def encode(self, data: Any) -> bytes:
         """Encode a value to bytes with type ID prefix."""
         type_id, raw = self.encode_raw(data)
-        return bytes([type_id]) + raw
+        result = bytes([type_id]) + raw
+
+        if self.vigilant and self.decode(result) != data:
+            raise ValueError(f"Value {data!r} failed round-trip encoding.")
+
+        return result
 
     def encode_raw(self, data: Any) -> tuple[int, bytes]:
         """Encode a value, returning (type_id, raw_bytes) separately."""
@@ -222,6 +228,11 @@ class Codec:
             state = (state[0], tuple(state[1]), state[2])
             rng = random.Random()  # noqa: S311  # nosec B311
             rng.setstate(state)
+
+            if self.vigilant:
+                # HACK
+                random.Random.__eq__ = lambda self, other: self.getstate() == other.getstate()  # type: ignore
+
             return rng
 
         self.register(random.Random, 133, encode_random, decode_random, mutable=True)
