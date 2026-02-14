@@ -109,7 +109,7 @@ class Memory(DBDriver):
 
     def __init__(self) -> None:
         super().__init__()
-        self.log: dict[str, dict[str, list[Value]]] = {}
+        self.log: dict[str, dict[str, list[tuple[float, bool, bytes | None, str]]]] = {}
 
     def close(self) -> None:
         pass
@@ -131,9 +131,9 @@ class Memory(DBDriver):
                         {
                             "namespace": namespace,
                             "field": field,
-                            "value": (self.codec.encode(v.data) if v.data is not None else None),
-                            "created_at": v.time,
-                            "context": v.context,
+                            "value": v[2],
+                            "created_at": v[0],
+                            "context": v[3],
                         }
                     )
 
@@ -145,7 +145,6 @@ class Memory(DBDriver):
         for row_dict in unpacker:
             namespace, field = row_dict["namespace"], row_dict["field"]
             raw_value = row_dict["value"]
-            value = self.codec.decode(raw_value) if raw_value is not None else None
             ts = row_dict["created_at"]
             ctx = row_dict["context"]
 
@@ -154,7 +153,7 @@ class Memory(DBDriver):
             if field not in self.log[namespace]:
                 self.log[namespace][field] = []
 
-            self.log[namespace][field].append(Value(ts, value is None, value, ctx))
+            self.log[namespace][field].append((ts, raw_value is None, raw_value, ctx))
 
             if self.replace_predicate(namespace, field):
                 self.log[namespace][field] = self.log[namespace][field][-1:]
@@ -165,7 +164,8 @@ class Memory(DBDriver):
         if field not in self.log[namespace]:
             self.log[namespace][field] = []
 
-        self.log[namespace][field].append(Value(self.now, False, data, context))
+        print(self.codec.encode(data))
+        self.log[namespace][field].append((self.now, False, self.codec.encode(data), context))
 
         if self.replace_predicate(namespace, field):
             self.log[namespace][field] = self.log[namespace][field][-1:]
@@ -174,13 +174,16 @@ class Memory(DBDriver):
         if namespace not in self.log or field not in self.log[namespace]:
             raise AttributeError(f"Key not found: ({namespace}, {field})")
 
-        self.log[namespace][field].append(Value(self.now, True, None, context))
+        self.log[namespace][field].append((self.now, True, None, context))
 
     def history_all(self) -> Iterator[tuple[str, str, Value]]:
         for namespace, fields in self.log.items():
             for field, values in fields.items():
                 for value in values:
-                    yield namespace, field, value
+                    print(value[2])
+                    yield namespace, field, Value(
+                        value[0], value[1], self.codec.decode(value[2]) if value[2] is not None else None, value[3]
+                    )
 
 
 class PostgreSQL(DBDriver):
