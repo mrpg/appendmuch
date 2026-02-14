@@ -79,8 +79,15 @@ class Codec:
         type_id, raw = self.encode_raw(data)
         result = bytes([type_id]) + raw
 
-        if self.vigilant and self.decode(result) != data:
-            raise ValueError(f"Value {data!r} failed round-trip encoding.")
+        if self.vigilant:
+            decoded = self.decode(result)
+
+            if decoded != data and not (
+                isinstance(data, random.Random)
+                and isinstance(decoded, random.Random)
+                and data.getstate() == decoded.getstate()
+            ):
+                raise ValueError(f"Value {data!r} failed round-trip encoding.")
 
         return result
 
@@ -228,10 +235,6 @@ class Codec:
             state = (state[0], tuple(state[1]), state[2])
             rng = random.Random()  # noqa: S311  # nosec B311
             rng.setstate(state)
-
-            if self.vigilant:
-                # HACK
-                random.Random.__eq__ = lambda self, other: self.getstate() == other.getstate()  # type: ignore
 
             return rng
 

@@ -164,7 +164,6 @@ class Memory(DBDriver):
         if field not in self.log[namespace]:
             self.log[namespace][field] = []
 
-        print(self.codec.encode(data))
         self.log[namespace][field].append((self.now, False, self.codec.encode(data), context))
 
         if self.replace_predicate(namespace, field):
@@ -180,7 +179,6 @@ class Memory(DBDriver):
         for namespace, fields in self.log.items():
             for field, values in fields.items():
                 for value in values:
-                    print(value[2])
                     yield namespace, field, Value(
                         value[0], value[1], self.codec.decode(value[2]) if value[2] is not None else None, value[3]
                     )
