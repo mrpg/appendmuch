@@ -38,6 +38,21 @@ with player:
     print(player.items)  # ['sword', 'shield']
 ```
 
+## Change tracking
+
+A `Store` can call a custom function if changes are made to a `Storage` instance. This can be used to notify other parts of the software of internal state changes.
+
+```python
+def update(ns, key, value):
+    print(f"{key!r} on {ns!r} is now {value.data!r}")
+
+store2 = Store(Memory(), on_change=update)
+customer = store2.storage("firm", "customer")
+
+customer.age = 37
+customer.name_ = "John Doe"
+```
+
 ## Temporal queries with `within`
 
 Every write is timestamped. Use `within` to query field values as they were when a condition held:
@@ -61,7 +76,7 @@ for round_val, ctx in within.along(player, "round"):
 
 Changes are appended to the database, never overwritten. The `__history__()` method on Storage instances returns a `dict` of `SortedList`s of `Value`s, a special validated type:
 
-```player
+```python
 player.__history__()["score"]
 # Returns:
 # SortedKeyList([…, Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14'), …])
