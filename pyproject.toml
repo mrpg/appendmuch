@@ -104,7 +104,7 @@ src_paths = ["src"]
 skip = ["tests", "build", "dist", ".venv", "venv"]
 
 [tool.black]
-line-length = 100
+line-length = 120
 target-version = ["py311"]
 
 [tool.bandit]

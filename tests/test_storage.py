@@ -175,9 +175,7 @@ def test_namespace_validator_reject():
 
 
 def test_replace_predicate():
-    store = make_store(
-        replace_predicate=lambda ns, field: field == "latest" and ns.startswith("data/")
-    )
+    store = make_store(replace_predicate=lambda ns, field: field == "latest" and ns.startswith("data/"))
     s = store.storage("data", "test")
 
     s.latest = "v1"
@@ -191,9 +189,7 @@ def test_replace_predicate():
 
 
 def test_replace_predicate_normal_field():
-    store = make_store(
-        replace_predicate=lambda ns, field: field == "latest" and ns.startswith("data/")
-    )
+    store = make_store(replace_predicate=lambda ns, field: field == "latest" and ns.startswith("data/"))
     s = store.storage("data", "test")
 
     s.normal = "v1"

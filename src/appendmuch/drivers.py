@@ -13,7 +13,6 @@ import sqlite3
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from typing import Any, cast
 
 import msgpack
@@ -249,10 +248,7 @@ class PostgreSQL(DBDriver):
             raise
 
     def should_flush_batch(self) -> bool:
-        return (
-            len(self.batch_inserts) >= self.batch_size
-            or time.time() - self.last_batch_time >= self.batch_timeout
-        )
+        return len(self.batch_inserts) >= self.batch_size or time.time() - self.last_batch_time >= self.batch_timeout
 
     def close(self) -> None:
         if self.batch_inserts and hasattr(self, "pool") and self.pool:
@@ -415,6 +411,8 @@ class PostgreSQL(DBDriver):
                 cur.executemany(_insert_pg(self.table_name), batch)
 
     def insert(self, namespace: str, field: str, data: Any, context: str) -> None:
+        encoded = self.codec.encode(data)
+
         if self.replace_predicate(namespace, field):
             if self.batch_inserts:
                 with (
@@ -431,17 +429,15 @@ class PostgreSQL(DBDriver):
             ):
                 cur.execute(
                     _update_pg(self.table_name),
-                    (self.codec.encode(data), self.now, context, namespace, field),
+                    (encoded, self.now, context, namespace, field),
                 )
                 if cur.rowcount == 0:
                     cur.execute(
                         _insert_pg(self.table_name),
-                        (namespace, field, self.codec.encode(data), self.now, context),
+                        (namespace, field, encoded, self.now, context),
                     )
         else:
-            self.batch_inserts.append(
-                (namespace, field, self.codec.encode(data), self.now, context)
-            )
+            self.batch_inserts.append((namespace, field, encoded, self.now, context))
 
             if self.should_flush_batch():
                 with (
@@ -539,16 +535,6 @@ class Sqlite3(DBDriver):
             self.connection.execute("PRAGMA mmap_size=268435456")
         return self.connection
 
-    @contextmanager
-    def batch_context(self) -> Iterator[Any]:
-        conn = self.get_connection()
-        try:
-            yield conn
-            self.process_batch(conn)
-        except Exception:
-            conn.rollback()
-            raise
-
     def process_batch(self, conn: sqlite3.Connection) -> None:
         """Flush pending batch inserts.
 
@@ -569,10 +555,7 @@ class Sqlite3(DBDriver):
             raise
 
     def should_flush_batch(self) -> bool:
-        return (
-            len(self.batch_inserts) >= self.batch_size
-            or time.time() - self.last_batch_time >= self.batch_timeout
-        )
+        return len(self.batch_inserts) >= self.batch_size or time.time() - self.last_batch_time >= self.batch_timeout
 
     def close(self) -> None:
         if self.connection:
@@ -594,9 +577,7 @@ class Sqlite3(DBDriver):
 
     def size(self) -> int | None:
         conn = self.get_connection()
-        cursor = conn.execute(
-            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()"
-        )
+        cursor = conn.execute("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()")
         row = cursor.fetchone()
         return cast("int", row[0]) if row else None
 
@@ -695,6 +676,8 @@ class Sqlite3(DBDriver):
         conn.commit()
 
     def insert(self, namespace: str, field: str, data: Any, context: str) -> None:
+        encoded = self.codec.encode(data)
+
         if self.replace_predicate(namespace, field):
             if self.batch_inserts:
                 self.process_batch(self.get_connection())
@@ -702,18 +685,16 @@ class Sqlite3(DBDriver):
             conn = self.get_connection()
             cursor = conn.execute(
                 _update_sq(self.table_name),
-                (self.codec.encode(data), self.now, context, namespace, field),
+                (encoded, self.now, context, namespace, field),
             )
             if cursor.rowcount == 0:
                 conn.execute(
                     _insert_sq(self.table_name),
-                    (namespace, field, self.codec.encode(data), self.now, context),
+                    (namespace, field, encoded, self.now, context),
                 )
             conn.commit()
         else:
-            self.batch_inserts.append(
-                (namespace, field, self.codec.encode(data), self.now, context)
-            )
+            self.batch_inserts.append((namespace, field, encoded, self.now, context))
 
             if self.should_flush_batch():
                 self.process_batch(self.get_connection())

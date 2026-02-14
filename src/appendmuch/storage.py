@@ -25,6 +25,8 @@ def tuple2dbns(ns: tuple[str, ...]) -> str:
 
 
 def dbns2tuple(dbns: str) -> tuple[str, ...]:
+    if not dbns:
+        return ()
     return tuple(dbns.split("/"))
 
 
@@ -57,9 +59,7 @@ class Store:
         namespace_validator: Callable[[tuple[str, ...]], bool] | None = None,
     ) -> None:
         self.codec = codec or Codec()
-        self.replace_predicate: Callable[[str, str], bool] = replace_predicate or (
-            lambda ns, field: False
-        )
+        self.replace_predicate: Callable[[str, str], bool] = replace_predicate or (lambda ns, field: False)
         self.on_change = on_change
         self.namespace_validator = namespace_validator
         self.cache: dict[str, Any] = {}
@@ -190,13 +190,11 @@ class Store:
         if caller is not None:
             namespace = caller.__namespace__
 
-        self.driver.now = time()
-        immutable = self.codec.immutable_types()
         dbns = tuple2dbns(namespace) if namespace else ""
 
         match action, key, value:
             case "insert", _, _ if isinstance(ctx, str):
-                rval = self.perform_insert(namespace, dbns, key, value, ctx, immutable)
+                rval = self.perform_insert(namespace, dbns, key, value, ctx)
             case "delete", _, None if isinstance(ctx, str):
                 self.perform_delete(namespace, dbns, key, ctx)
             case "get", _, None:
@@ -223,8 +221,9 @@ class Store:
         key: str,
         value: Any,
         ctx: str,
-        immutable: tuple[type, ...],
     ) -> Any:
+        self.driver.now = time()
+        immutable = self.codec.immutable_types()
         self.driver.insert(dbns, key, value, ctx)
         nested_dict = self.get_namespace(namespace, create=True)
 
@@ -256,6 +255,11 @@ class Store:
         key: str,
         ctx: str,
     ) -> None:
+        ns_dict = self.get_namespace(namespace)
+        if ns_dict is None or key not in ns_dict:
+            raise AttributeError(f"Key not found: ({dbns}, {key})")
+
+        self.driver.now = time()
         self.driver.delete(dbns, key, ctx)
         nested_dict = self.get_namespace(namespace, create=True)
         if nested_dict is not None and key not in nested_dict:
@@ -286,11 +290,7 @@ class Store:
         if current and isinstance(current, dict):
             result: list[str] = []
             for field in current:
-                if (
-                    hasattr(current[field], "__iter__")
-                    and current[field]
-                    and not current[field][-1].unavailable
-                ):
+                if hasattr(current[field], "__iter__") and current[field] and not current[field][-1].unavailable:
                     result.append(field)
             return result
         return []
@@ -302,8 +302,7 @@ class Store:
         current = self.get_namespace(namespace)
         if current and isinstance(current, dict):
             return any(
-                hasattr(values, "__iter__") and values and not values[-1].unavailable
-                for values in current.values()
+                hasattr(values, "__iter__") and values and not values[-1].unavailable for values in current.values()
             )
         return False
 
@@ -321,9 +320,7 @@ class Store:
         ctx: dict[str, Any],
     ) -> Any:
         def _not_found() -> AttributeError:
-            return AttributeError(
-                f"No value found for {key} within the specified context in namespace {namespace}"
-            )
+            return AttributeError(f"No value found for {key} within the specified context in namespace {namespace}")
 
         ns_ = self.get_namespace(namespace)
 
@@ -582,7 +579,7 @@ class Storage:
             if name not in accessed_fields:
                 accessed_fields[name] = safe_deepcopy(value, store.codec.immutable_types())
             return self.__guarded_return__(name, value)
-        except NameError as e:
+        except AttributeError as e:
             raise AttributeError(f"{self} has no .{name}") from e
 
     def __delattr__(self, name: str) -> None:

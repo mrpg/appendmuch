@@ -23,9 +23,7 @@ from orjson import loads as jl
 class Codec:
     def __init__(self) -> None:
         # ordered list for isinstance dispatch (order matters: bool before int, etc.)
-        self.ordered_encoders: list[
-            tuple[type, int, Callable[[Any], bytes], Callable[[Any], bool] | None]
-        ] = []
+        self.ordered_encoders: list[tuple[type, int, Callable[[Any], bytes], Callable[[Any], bool] | None]] = []
         # fast path for exact type match
         self.exact_encoders: dict[type, tuple[int, Callable[[Any], bytes]]] = {}
         # decoder dispatch by type id
