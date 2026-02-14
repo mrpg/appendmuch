@@ -7,7 +7,9 @@ within (contextual queries).
 """
 
 import copy
+import weakref
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import suppress
 from inspect import currentframe
 from time import time
 from typing import Any, Literal, Self, cast
@@ -71,6 +73,12 @@ class Store:
 
         self.driver.ensure()
         self.load()
+        self._finalizer = weakref.finalize(self, self._cleanup, driver)
+
+    @staticmethod
+    def _cleanup(driver: DBDriver) -> None:
+        with suppress(Exception):
+            driver.close()
 
     def storage(
         self,
@@ -81,7 +89,8 @@ class Store:
 
     def close(self) -> None:
         """Close the underlying driver and release resources."""
-        self.driver.close()
+        if self._finalizer.detach():
+            self.driver.close()
 
     def __enter__(self) -> "Store":
         return self
