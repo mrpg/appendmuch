@@ -1,4 +1,4 @@
-# Copyright Max R. P. Grossmann, Holger Gerhardt, et al., 2026.
+# Copyright Max R. P. Grossmann & Holger Gerhardt, 2026.
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
 from appendmuch.codec import Codec
@@ -25,5 +25,5 @@ __all__ = [
 
 __version_info__ = 0, 0, 1
 __version__ = ".".join(map(str, __version_info__))
-__author__ = "Max R. P. Grossmann, Holger Gerhardt, et al."
+__author__ = "Max R. P. Grossmann, Holger Gerhardt"
 __email__ = "appendmuch@grossmann.nexus"
