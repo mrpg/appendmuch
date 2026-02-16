@@ -33,6 +33,8 @@ class Codec:
         self.id_to_type: dict[int, type] = {}
         self.mutable_ids: set[int] = set()
         self.vigilant = True
+        self._immutable_types_cache: tuple[type, ...] | None = None
+        self._mutable_types_cache: tuple[type, ...] | None = None
 
         self.register_builtins()
 
@@ -67,6 +69,9 @@ class Codec:
 
         if mutable:
             self.mutable_ids.add(type_id)
+
+        self._immutable_types_cache = None
+        self._mutable_types_cache = None
 
         self.ordered_encoders.append((cls, type_id, encoder, predicate))
 
@@ -123,10 +128,18 @@ class Codec:
         return decoder(raw)
 
     def immutable_types(self) -> tuple[type, ...]:
-        return tuple(cls for cls, tid in self.type_to_id.items() if tid not in self.mutable_ids)
+        if self._immutable_types_cache is None:
+            self._immutable_types_cache = tuple(
+                cls for cls, tid in self.type_to_id.items() if tid not in self.mutable_ids
+            )
+
+        return self._immutable_types_cache
 
     def mutable_types(self) -> tuple[type, ...]:
-        return tuple(cls for cls, tid in self.type_to_id.items() if tid in self.mutable_ids)
+        if self._mutable_types_cache is None:
+            self._mutable_types_cache = tuple(cls for cls, tid in self.type_to_id.items() if tid in self.mutable_ids)
+
+        return self._mutable_types_cache
 
     def type_map(self) -> dict[type, int]:
         return dict(self.type_to_id)
