@@ -4,6 +4,14 @@ An extensible append-only log with in-memory cache and pluggable storage backend
 
 ## Installation
 
+From PyPI:
+
+```
+pip install appendmuch
+```
+
+From GitHub:
+
 ```
 pip install "appendmuch @ git+https://github.com/mrpg/appendmuch.git@master"
 ```
