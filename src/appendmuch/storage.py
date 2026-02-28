@@ -565,7 +565,7 @@ class Storage:
         return value
 
     def __getattribute__(self, name: str) -> Any:
-        if name in ("name", "flush", "get") or (name.startswith("__") and name.endswith("__")):
+        if name in ("name", "flush", "get", "refresh") or (name.startswith("__") and name.endswith("__")):
             return object.__getattribute__(self, name)
 
         cls = type(self)
@@ -695,6 +695,17 @@ class Storage:
 
     def __repr__(self) -> str:
         return f"Storage{self.__namespace__}"
+
+    def refresh(self, *fields: str) -> None:
+        """Clear cached values for the given fields so the next read
+        fetches from the store.  If no fields are given, the entire
+        field cache is cleared."""
+        field_cache = object.__getattribute__(self, "__field_cache__")
+        if fields:
+            for field in fields:
+                field_cache.pop(field, None)
+        else:
+            field_cache.clear()
 
     def get(self, name: str, default: Any = None) -> Any:
         try:

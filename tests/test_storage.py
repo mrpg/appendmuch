@@ -610,3 +610,47 @@ def test_explicit_set_then_mutate_flushes():
     extra_changes = [c for c in changes[initial_changes:] if c[0] == "x"]
     assert len(extra_changes) == 1
     assert extra_changes[0][1] == [1, 2, 3]
+
+
+def test_refresh_picks_up_external_write():
+    """refresh lets a Storage object see a write made by a different object."""
+    store = make_store()
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+
+    s1.x = 1
+    assert s1.x == 1
+    assert s2.x == 1
+
+    # s2 writes to the store; s1's cache is now stale
+    s2.x = 99
+    assert s1.x == 1  # stale
+
+    s1.refresh("x")
+    assert s1.x == 99  # fresh
+
+
+def test_refresh_all():
+    """refresh with no arguments clears the entire field cache."""
+    store = make_store()
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+
+    s1.x = 1
+    s1.y = 2
+    assert s1.x == 1
+    assert s1.y == 2
+
+    s2.x = 10
+    s2.y = 20
+
+    s1.refresh()
+    assert s1.x == 10
+    assert s1.y == 20
+
+
+def test_refresh_uncached_field_is_noop():
+    """refresh on a field never accessed does not raise."""
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.refresh("nonexistent")  # should not raise
