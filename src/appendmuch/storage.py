@@ -69,7 +69,13 @@ class VirtualFields(dict[str, Callable[..., Any]]):
     Removal works via ``del player.virtual["name"]``.
     """
 
-    _RESERVED: frozenset[str] = frozenset()
+    _RESERVED: frozenset[str] | None = None
+
+    @staticmethod
+    def _reserved() -> frozenset[str]:
+        if VirtualFields._RESERVED is None:
+            VirtualFields._RESERVED = frozenset(Storage.INTERNAL_ATTRS)
+        return VirtualFields._RESERVED
 
     def __setitem__(self, name: str, func: Callable[..., Any]) -> None:
         ensure(
@@ -78,7 +84,7 @@ class VirtualFields(dict[str, Callable[..., Any]]):
             f"Virtual field name must be a valid identifier, got {name!r}",
         )
         ensure(callable(func), TypeError, f"Virtual field must be callable, got {type(func).__name__}")
-        ensure(name not in self._RESERVED, ValueError, f"Cannot use reserved name {name!r} as a virtual field")
+        ensure(name not in self._reserved(), ValueError, f"Cannot use reserved name {name!r} as a virtual field")
         super().__setitem__(name, func)
 
     def __call__(self, func_or_name: Callable[..., Any] | str) -> Any:
@@ -501,7 +507,6 @@ class Storage:
         "name",
         "virtual",
         "__namespace__",
-        "__virtual__",
         "__store__",
     )
 
@@ -532,9 +537,7 @@ class Storage:
         object.__setattr__(self, "__field_cache__", {})
         object.__setattr__(self, "__explicitly_set__", set())
         object.__setattr__(self, "__assigned_values__", {})
-        vf = VirtualFields(virtual or {})
-        object.__setattr__(self, "__virtual__", vf)
-        object.__setattr__(self, "virtual", vf)
+        object.__setattr__(self, "virtual", VirtualFields(virtual or {}))
 
     def __hash__(self) -> int:
         return hash(self.__namespace__)
@@ -569,7 +572,7 @@ class Storage:
             )
             return object.__setattr__(self, name, value)
 
-        virtual = object.__getattribute__(self, "__virtual__")
+        virtual = object.__getattribute__(self, "virtual")
 
         if name in virtual:
             raise AttributeError(f"Cannot assign to virtual field '{name}'")
@@ -639,7 +642,7 @@ class Storage:
 
         accessed_fields = object.__getattribute__(self, "__accessed_fields__")
         field_cache = object.__getattribute__(self, "__field_cache__")
-        virtual = object.__getattribute__(self, "__virtual__")
+        virtual = object.__getattribute__(self, "virtual")
 
         if name in virtual:
             return virtual[name](self)
@@ -767,6 +770,3 @@ class Storage:
             return getattr(self, name)
         except AttributeError:
             return default
-
-
-VirtualFields._RESERVED = frozenset(Storage.INTERNAL_ATTRS)
