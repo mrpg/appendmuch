@@ -48,6 +48,57 @@ def flatten(d: dict[str, Any], trail: tuple[str, ...] = ()) -> dict[tuple[str, .
     return result
 
 
+class VirtualFields(dict[str, Callable[..., Any]]):
+    """A dict subclass that doubles as a decorator for registering virtual fields.
+
+    Supports three styles of registration::
+
+        # 1. Decorator (uses function name)
+        @player.virtual
+        def score_doubled(p):
+            return p.score * 2
+
+        # 2. Decorator with explicit name
+        @player.virtual("bonus")
+        def compute_bonus(p):
+            return p.score * 0.1
+
+        # 3. Dict-style
+        player.virtual["computed"] = lambda p: p.score + 10
+
+    Removal works via ``del player.virtual["name"]``.
+    """
+
+    _RESERVED: frozenset[str] = frozenset()
+
+    def __setitem__(self, name: str, func: Callable[..., Any]) -> None:
+        ensure(
+            isinstance(name, str) and name.isidentifier(),
+            ValueError,
+            f"Virtual field name must be a valid identifier, got {name!r}",
+        )
+        ensure(callable(func), TypeError, f"Virtual field must be callable, got {type(func).__name__}")
+        ensure(name not in self._RESERVED, ValueError, f"Cannot use reserved name {name!r} as a virtual field")
+        super().__setitem__(name, func)
+
+    def __call__(self, func_or_name: Callable[..., Any] | str) -> Any:
+        if callable(func_or_name):
+            self[func_or_name.__name__] = func_or_name
+            return func_or_name
+
+        ensure(
+            isinstance(func_or_name, str),
+            TypeError,
+            f"Expected a callable or string, got {type(func_or_name).__name__}",
+        )
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            self[func_or_name] = func
+            return func
+
+        return decorator
+
+
 class Store:
     """Central configuration and state holder for an append-only log."""
 
@@ -448,6 +499,7 @@ class Storage:
         "__explicitly_set__",
         "__assigned_values__",
         "name",
+        "virtual",
         "__namespace__",
         "__virtual__",
         "__store__",
@@ -480,7 +532,9 @@ class Storage:
         object.__setattr__(self, "__field_cache__", {})
         object.__setattr__(self, "__explicitly_set__", set())
         object.__setattr__(self, "__assigned_values__", {})
-        object.__setattr__(self, "__virtual__", virtual or {})
+        vf = VirtualFields(virtual or {})
+        object.__setattr__(self, "__virtual__", vf)
+        object.__setattr__(self, "virtual", vf)
 
     def __hash__(self) -> int:
         return hash(self.__namespace__)
@@ -495,7 +549,7 @@ class Storage:
         if name == "__class__":
             return object.__setattr__(self, name, value)
 
-        if name == "name" or (name.startswith("__") and name.endswith("__")):
+        if name in ("name", "virtual") or (name.startswith("__") and name.endswith("__")):
             ensure(
                 name in type(self).INTERNAL_ATTRS,
                 AttributeError,
@@ -505,6 +559,7 @@ class Storage:
                 name
                 not in (
                     "name",
+                    "virtual",
                     "__namespace__",
                     "__store__",
                 )
@@ -565,7 +620,7 @@ class Storage:
         return value
 
     def __getattribute__(self, name: str) -> Any:
-        if name in ("name", "flush", "get", "refresh") or (name.startswith("__") and name.endswith("__")):
+        if name in ("name", "virtual", "flush", "get", "refresh") or (name.startswith("__") and name.endswith("__")):
             return object.__getattribute__(self, name)
 
         cls = type(self)
@@ -712,3 +767,6 @@ class Storage:
             return getattr(self, name)
         except AttributeError:
             return default
+
+
+VirtualFields._RESERVED = frozenset(Storage.INTERNAL_ATTRS)

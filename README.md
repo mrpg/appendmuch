@@ -115,6 +115,31 @@ player2.group.budget = 42.7
 print(player3.group.budget)  # Also 42.7
 ```
 
+Virtual fields can also be added and removed at any time using `storage.virtual`:
+
+```python
+player = store.storage("game", "player1")
+player.score = 100
+
+# As a decorator:
+@player.virtual
+def score_doubled(p):
+    return p.score * 2
+
+print(player.score_doubled)  # 200
+
+# With an explicit name:
+@player.virtual("bonus")
+def compute_bonus(p):
+    return p.score * 0.1
+
+# Or directly:
+player.virtual["penalty"] = lambda p: p.score * -0.05
+
+# Remove when no longer needed:
+del player.virtual["penalty"]
+```
+
 References to `Storage` instances cannot be stored directly on `Storage` instances, but the following pattern helps with indirection:
 
 ```python

@@ -162,6 +162,89 @@ def test_virtual_field_not_settable():
         s.computed = 99
 
 
+def test_virtual_hot_plug_dict():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.x = 10
+    s.virtual["doubled"] = lambda p: p.x * 2
+    assert s.doubled == 20
+    del s.virtual["doubled"]
+    with pytest.raises(AttributeError):
+        _ = s.doubled
+
+
+def test_virtual_hot_plug_decorator():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.x = 5
+
+    @s.virtual
+    def x_plus_one(p):
+        return p.x + 1
+
+    assert s.x_plus_one == 6
+
+
+def test_virtual_hot_plug_decorator_named():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.x = 3
+
+    @s.virtual("triple")
+    def _ignored(p):
+        return p.x * 3
+
+    assert s.triple == 9
+
+
+def test_virtual_hot_plug_replaces():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.virtual["val"] = lambda p: 1
+    assert s.val == 1
+    s.virtual["val"] = lambda p: 2
+    assert s.val == 2
+
+
+def test_virtual_hot_plug_shadows_real_field():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.score = 100
+    assert s.score == 100
+    s.virtual["score"] = lambda p: 999
+    assert s.score == 999
+    del s.virtual["score"]
+    assert s.score == 100
+
+
+def test_virtual_validates_name():
+    store = make_store()
+    s = store.storage("ns", "test")
+    with pytest.raises(ValueError, match="valid identifier"):
+        s.virtual["not valid!"] = lambda p: 1
+
+
+def test_virtual_validates_callable():
+    store = make_store()
+    s = store.storage("ns", "test")
+    with pytest.raises(TypeError, match="callable"):
+        s.virtual["field"] = 42
+
+
+def test_virtual_validates_reserved():
+    store = make_store()
+    s = store.storage("ns", "test")
+    with pytest.raises(ValueError, match="reserved"):
+        s.virtual["__store__"] = lambda p: None
+
+
+def test_virtual_not_reassignable():
+    store = make_store()
+    s = store.storage("ns", "test")
+    with pytest.raises(AttributeError, match="reserved"):
+        s.virtual = {}
+
+
 def test_namespace_validator_pass():
     store = make_store(namespace_validator=lambda ns: ns[0] == "allowed")
     s = store.storage("allowed", "test")
