@@ -33,6 +33,7 @@ class Codec:
         self.id_to_type: dict[int, type] = {}
         self.mutable_ids: set[int] = set()
         self.vigilant = True
+        self.vigilant_skip: Callable[[Any], bool] | None = None
         self._immutable_types_cache: tuple[type, ...] | None = None
         self._mutable_types_cache: tuple[type, ...] | None = None
 
@@ -84,7 +85,7 @@ class Codec:
         type_id, raw = self.encode_raw(data)
         result = bytes([type_id]) + raw
 
-        if self.vigilant:
+        if self.vigilant and not (self.vigilant_skip is not None and self.vigilant_skip(data)):
             decoded = self.decode(result)
 
             if decoded != data and not (
