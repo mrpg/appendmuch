@@ -7,6 +7,7 @@ within (contextual queries).
 """
 
 import copy
+import functools
 import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
@@ -487,14 +488,39 @@ class within:  # noqa: N801
         except AttributeError:
             return default
 
-    @classmethod
-    def along(cls, storage: "Storage", field: str) -> Iterator[tuple[Any, "within"]]:
+    along: "AlongDescriptor"
+
+
+class AlongDescriptor:
+    """Descriptor enabling both ``within.along(s, field)`` and ``within(s, …).along(field)``."""
+
+    def __get__(self, obj: "within | None", objtype: "type[within] | None" = None) -> Any:
+        if obj is None:
+            return self._class_along
+        return functools.partial(self._instance_along, obj)
+
+    @staticmethod
+    def _class_along(storage: "Storage", field: str) -> Iterator[tuple[Any, "within"]]:
         for value in cast(
             "list[Value]",
             storage.__store__.db_request(storage, "get_field_history", field),
         ):
             if value.data is not None:
                 yield value.data, within(storage, **{field: value.data})
+
+    @staticmethod
+    def _instance_along(self: "within", field: str) -> Iterator[tuple[Any, "within"]]:
+        storage = self.__storage__
+        ctx = self.__context_fields__
+        for value in cast(
+            "list[Value]",
+            storage.__store__.db_request(storage, "get_field_history", field),
+        ):
+            if value.data is not None:
+                yield value.data, within(storage, **{**ctx, field: value.data})
+
+
+within.along = AlongDescriptor()
 
 
 class Storage:

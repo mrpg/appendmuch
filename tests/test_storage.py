@@ -359,6 +359,81 @@ def test_within_along():
     assert results[1][1].score == 20
 
 
+def test_within_along_chained():
+    """within(s, ctx=...).along(field) merges contexts."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "rlpgg"
+        s.round = 1
+        s.score = 10
+        s.round = 2
+        s.score = 20
+
+    results = list(within(s, app="rlpgg").along("round"))
+    assert len(results) == 2
+    assert results[0][0] == 1
+    assert results[0][1].score == 10
+    assert results[1][0] == 2
+    assert results[1][1].score == 20
+
+
+def test_within_along_chained_filters_by_context():
+    """Chained along only yields values valid within the parent context."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "rlpgg"
+        s.round = 1
+        s.score = 10
+        s.app = "other"
+        s.round = 2
+        s.score = 99
+
+    results = list(within(s, app="rlpgg").along("round"))
+    # round=1 was set while app="rlpgg", round=2 while app="other"
+    assert len(results) == 2  # along yields both round values
+    assert results[0][0] == 1
+    assert results[0][1].score == 10  # accessible: app was rlpgg when score=10
+    # round=2 context has app="rlpgg" forced, but score=99 was set when app="other"
+    # so accessing score on results[1][1] should fail due to temporal ordering
+    with pytest.raises(AttributeError):
+        results[1][1].score
+
+
+def test_within_along_chained_no_matching_round():
+    """Chained along with context that has no matching field raises on access."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.score = 10
+
+    results = list(within(s, app="nonexistent").along("round"))
+    assert len(results) == 1
+    assert results[0][0] == 1
+    with pytest.raises(AttributeError):
+        results[0][1].score
+
+
+def test_within_along_classmethod_still_works():
+    """Existing classmethod API within.along(s, field) is unchanged."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.score = 5
+
+    results = list(within.along(s, "round"))
+    assert len(results) == 1
+    assert results[0][0] == 1
+    assert results[0][1].score == 5
+
+
 def test_store_load():
     store = make_store()
     s = store.storage("ns", "test")
