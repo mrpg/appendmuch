@@ -512,11 +512,34 @@ class AlongDescriptor:
     def _instance_along(self: "within", field: str) -> Iterator[tuple[Any, "within"]]:
         storage = self.__storage__
         ctx = self.__context_fields__
+        store = storage.__store__
+        ns_ = store.get_namespace(storage.__namespace__)
+        if not ns_ or not isinstance(ns_, dict):
+            return
+
+        # Build timeline of context fields to know their state at any point.
+        ctx_changes: list[tuple[float, str, Any]] = []
+        for cf in ctx:
+            if cf in ns_:
+                for val in ns_[cf]:
+                    if not val.unavailable:
+                        ctx_changes.append((cast("float", val.time), cf, val.data))
+        ctx_changes.sort()
+
         for value in cast(
             "list[Value]",
-            storage.__store__.db_request(storage, "get_field_history", field),
+            store.db_request(storage, "get_field_history", field),
         ):
-            if value.data is not None:
+            if value.data is None:
+                continue
+            # Check: at the time this value was set, did all context conditions hold?
+            t = cast("float", value.time)
+            current_ctx: dict[str, Any] = {}
+            for ct, cf, cd in ctx_changes:
+                if ct > t:
+                    break
+                current_ctx[cf] = cd
+            if all(current_ctx.get(cf) == cv for cf, cv in ctx.items()):
                 yield value.data, within(storage, **{**ctx, field: value.data})
 
 

@@ -359,19 +359,19 @@ def test_within_along():
     assert results[1][1].score == 20
 
 
-def test_within_along_chained():
-    """within(s, ctx=...).along(field) merges contexts."""
+def test_within_along_chained_basic():
+    """Chained along yields values set under the context with working attribute access."""
     store = make_store()
     s = store.storage("ns", "test")
 
     with s:
-        s.app = "rlpgg"
+        s.app = "some_game"
         s.round = 1
         s.score = 10
         s.round = 2
         s.score = 20
 
-    results = list(within(s, app="rlpgg").along("round"))
+    results = list(within(s, app="some_game").along("round"))
     assert len(results) == 2
     assert results[0][0] == 1
     assert results[0][1].score == 10
@@ -379,32 +379,62 @@ def test_within_along_chained():
     assert results[1][1].score == 20
 
 
-def test_within_along_chained_filters_by_context():
-    """Chained along only yields values valid within the parent context."""
+def test_within_along_chained_excludes_wrong_context():
+    """Values of the along field set under a different context are excluded."""
     store = make_store()
     s = store.storage("ns", "test")
 
     with s:
-        s.app = "rlpgg"
+        s.app = "some_game"
         s.round = 1
         s.score = 10
         s.app = "other"
         s.round = 2
         s.score = 99
 
-    results = list(within(s, app="rlpgg").along("round"))
-    # round=1 was set while app="rlpgg", round=2 while app="other"
-    assert len(results) == 2  # along yields both round values
+    results = list(within(s, app="some_game").along("round"))
+    assert len(results) == 1
     assert results[0][0] == 1
-    assert results[0][1].score == 10  # accessible: app was rlpgg when score=10
-    # round=2 context has app="rlpgg" forced, but score=99 was set when app="other"
-    # so accessing score on results[1][1] should fail due to temporal ordering
-    with pytest.raises(AttributeError):
-        results[1][1].score  # noqa: B018
+    assert results[0][1].score == 10
 
 
-def test_within_along_chained_no_matching_round():
-    """Chained along with context that has no matching field raises on access."""
+def test_within_along_chained_context_toggles():
+    """Context that flips back picks up values from both matching windows."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "some_game"
+        s.round = 1
+        s.app = "other"
+        s.round = 2
+        s.app = "some_game"
+        s.round = 3
+
+    results = list(within(s, app="some_game").along("round"))
+    assert [v for v, _ in results] == [1, 3]
+
+
+def test_within_along_chained_multiple_context_fields():
+    """Parent within with multiple context fields filters correctly."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "some_game"
+        s.mode = "ranked"
+        s.round = 1
+        s.mode = "casual"
+        s.round = 2
+        s.mode = "ranked"
+        s.round = 3
+
+    results = list(within(s, app="some_game", mode="ranked").along("round"))
+    assert [v for v, _ in results] == [1, 3]
+
+
+def test_within_along_chained_no_matching_context():
+    """Context value that never existed yields nothing."""
     store = make_store()
     s = store.storage("ns", "test")
 
@@ -412,11 +442,70 @@ def test_within_along_chained_no_matching_round():
         s.round = 1
         s.score = 10
 
-    results = list(within(s, app="nonexistent").along("round"))
-    assert len(results) == 1
-    assert results[0][0] == 1
+    assert list(within(s, app="nonexistent").along("round")) == []
+
+
+def test_within_along_chained_along_field_missing():
+    """Along field that doesn't exist in the namespace yields nothing."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "some_game"
+
+    assert list(within(s, app="some_game").along("round")) == []
+
+
+def test_within_along_chained_multiple_values_same_context():
+    """Multiple along values set under the same context are all yielded."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "some_game"
+        s.round = 2
+        s.where = "South Yarra"
+        s.where = "Carlton"
+        s.where = "Fremantle"
+
+    results = list(within(s, app="some_game", round=2).along("where"))
+    assert [v for v, _ in results] == ["South Yarra", "Carlton", "Fremantle"]
+
+
+def test_within_along_chained_attribute_access_uses_merged_context():
+    """Yielded within objects carry the merged context for attribute resolution."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.app = "some_game"
+        s.round = 1
+        s.score = 10
+        s.round = 2
+        s.score = 20
+
+    results = list(within(s, app="some_game").along("round"))
+    # Each yielded within should resolve score within {app=some_game, round=N}
+    assert results[0][1].score == 10
+    assert results[1][1].score == 20
+    # Nonexistent field still raises
     with pytest.raises(AttributeError):
-        results[0][1].score  # noqa: B018
+        results[0][1].nonexistent  # noqa: B018
+
+
+def test_within_along_chained_context_set_after_along_values():
+    """Along values set before the context field exists are excluded."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.round = 2
+        s.app = "some_game"
+        s.round = 3
+
+    results = list(within(s, app="some_game").along("round"))
+    assert [v for v, _ in results] == [3]
 
 
 def test_within_along_classmethod_still_works():
