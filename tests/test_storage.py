@@ -400,7 +400,7 @@ def test_within_along_chained_filters_by_context():
     # round=2 context has app="rlpgg" forced, but score=99 was set when app="other"
     # so accessing score on results[1][1] should fail due to temporal ordering
     with pytest.raises(AttributeError):
-        results[1][1].score
+        results[1][1].score  # noqa: B018
 
 
 def test_within_along_chained_no_matching_round():
@@ -416,7 +416,7 @@ def test_within_along_chained_no_matching_round():
     assert len(results) == 1
     assert results[0][0] == 1
     with pytest.raises(AttributeError):
-        results[0][1].score
+        results[0][1].score  # noqa: B018
 
 
 def test_within_along_classmethod_still_works():
