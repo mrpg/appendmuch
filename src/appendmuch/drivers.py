@@ -210,6 +210,9 @@ class PostgreSQL(DBDriver):
             ValueError,
             "tblextra must be empty or valid Python identifier",
         )
+        for fv, ns in replace_index_specs or []:
+            ensure(fv.isidentifier(), ValueError, "replace_index_specs field must be a valid identifier")
+            ensure("'" not in ns, ValueError, "replace_index_specs namespace pattern must not contain quotes")
 
         self.pool = psycopg_pool.ConnectionPool(
             conninfo,
@@ -512,6 +515,9 @@ class Sqlite3(DBDriver):
             ValueError,
             "tblextra must be empty or valid Python identifier",
         )
+        for fv, ns in replace_index_specs or []:
+            ensure(fv.isidentifier(), ValueError, "replace_index_specs field must be a valid identifier")
+            ensure("'" not in ns, ValueError, "replace_index_specs namespace pattern must not contain quotes")
         self.database = database
         self.table_prefix = table_prefix
         self.tblextra = tblextra
