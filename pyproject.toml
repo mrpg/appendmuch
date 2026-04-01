@@ -16,6 +16,9 @@ dependencies = [
     "orjson>=3.9.0",
 ]
 
+[tool.uv]
+exclude-newer = "8 days"
+
 [project.optional-dependencies]
 sqlite = []
 pg = [
