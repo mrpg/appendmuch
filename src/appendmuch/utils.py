@@ -3,11 +3,13 @@
 
 import copy
 import inspect
+import re
 import string
 from types import FrameType
 from typing import Any
 
 TOKEN_CHARS = set(string.ascii_letters + string.digits + "-._")
+SAFE_LIKE_PATTERN = re.compile(r"^[a-zA-Z0-9_%.\-/]+$")
 
 
 def ensure(

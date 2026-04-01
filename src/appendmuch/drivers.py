@@ -19,7 +19,7 @@ import msgpack
 
 from appendmuch.codec import Codec
 from appendmuch.types import Value
-from appendmuch.utils import ensure
+from appendmuch.utils import SAFE_LIKE_PATTERN, ensure
 
 # SQL fragments shared across drivers
 _COLS = "(namespace, field, value, created_at, context)"
@@ -201,18 +201,26 @@ class PostgreSQL(DBDriver):
         import psycopg_pool
 
         ensure(
-            table_prefix.isidentifier(),
+            table_prefix.isascii() and table_prefix.isidentifier(),
             ValueError,
-            "table_prefix must be a valid Python identifier",
+            "table_prefix must be a valid ASCII identifier",
         )
         ensure(
-            tblextra == "" or tblextra.isidentifier(),
+            tblextra == "" or (tblextra.isascii() and tblextra.isidentifier()),
             ValueError,
-            "tblextra must be empty or valid Python identifier",
+            "tblextra must be empty or a valid ASCII identifier",
         )
         for fv, ns in replace_index_specs or []:
-            ensure(fv.isidentifier(), ValueError, "replace_index_specs field must be a valid identifier")
-            ensure("'" not in ns, ValueError, "replace_index_specs namespace pattern must not contain quotes")
+            ensure(
+                fv.isascii() and fv.isidentifier(),
+                ValueError,
+                "replace_index_specs field must be a valid ASCII identifier",
+            )
+            ensure(
+                bool(SAFE_LIKE_PATTERN.match(ns)),
+                ValueError,
+                "replace_index_specs namespace pattern contains disallowed characters",
+            )
 
         self.pool = psycopg_pool.ConnectionPool(
             conninfo,
@@ -506,18 +514,26 @@ class Sqlite3(DBDriver):
     ) -> None:
         super().__init__()
         ensure(
-            table_prefix.isidentifier(),
+            table_prefix.isascii() and table_prefix.isidentifier(),
             ValueError,
-            "table_prefix must be a valid Python identifier",
+            "table_prefix must be a valid ASCII identifier",
         )
         ensure(
-            tblextra == "" or tblextra.isidentifier(),
+            tblextra == "" or (tblextra.isascii() and tblextra.isidentifier()),
             ValueError,
-            "tblextra must be empty or valid Python identifier",
+            "tblextra must be empty or a valid ASCII identifier",
         )
         for fv, ns in replace_index_specs or []:
-            ensure(fv.isidentifier(), ValueError, "replace_index_specs field must be a valid identifier")
-            ensure("'" not in ns, ValueError, "replace_index_specs namespace pattern must not contain quotes")
+            ensure(
+                fv.isascii() and fv.isidentifier(),
+                ValueError,
+                "replace_index_specs field must be a valid ASCII identifier",
+            )
+            ensure(
+                bool(SAFE_LIKE_PATTERN.match(ns)),
+                ValueError,
+                "replace_index_specs namespace pattern contains disallowed characters",
+            )
         self.database = database
         self.table_prefix = table_prefix
         self.tblextra = tblextra
