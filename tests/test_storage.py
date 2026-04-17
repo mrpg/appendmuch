@@ -752,24 +752,23 @@ def test_within_key_unavailable():
         _ = w.score
 
 
-def test_within_temporal_ordering_raises():
-    """within raises if context field was set after target field (no update)."""
+def test_within_value_set_before_context():
+    """within returns the latest value of key in effect while ctx holds,
+    even when the key was set before the context field was established."""
     store = make_store()
     s = store.storage("ns", "test")
 
     with s:
         s.value = 42
         s.ctx = "a"
-        # value was set BEFORE ctx, and never updated after.
-        # So at the moment ctx="a" is true, value is stale (set before ctx).
-        # The temporal check rejects this: context_time > target_time.
+        # value was set BEFORE ctx and never changed. While ctx="a" holds,
+        # value is still 42 — that's the latest value in that context.
 
     w = within(s, ctx="a")
-    with pytest.raises(AttributeError):
-        _ = w.value
+    assert w.value == 42
 
 
-def test_within_temporal_ordering_ok():
+def test_within_value_set_after_context():
     """within succeeds when target field is set after context field."""
     store = make_store()
     s = store.storage("ns", "test")
@@ -780,6 +779,116 @@ def test_within_temporal_ordering_ok():
 
     w = within(s, ctx="a")
     assert w.value == 42
+
+
+def test_within_value_persists_across_context_toggles():
+    """A value set before ctx is reached carries forward into later ctx windows."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.role = "buyer"
+        s.round = 1
+        s.value = 17
+        s.round = 2
+        s.value = -42
+
+    assert within(s, round=1).role == "buyer"
+    assert within(s, round=2).role == "buyer"
+    assert within(s, round=1).value == 17
+    assert within(s, round=2).value == -42
+
+
+def test_within_key_deleted_before_context_raises():
+    """If key was deleted before ctx is reached and never re-set, raise."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.role = "buyer"
+        del s.role
+        s.ctx = "a"
+
+    w = within(s, ctx="a")
+    with pytest.raises(AttributeError):
+        _ = w.role
+
+
+def test_within_reenters_context_picks_up_current_value():
+    """When ctx leaves and re-enters the same value, within sees the value in
+    effect at the latest re-entry — even if it was assigned while ctx held a
+    different value."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.ctx = "a"
+        s.value = 1
+        s.ctx = "b"
+        s.value = 2  # assigned while ctx="b"
+        s.ctx = "a"  # ctx re-enters "a"; value is still 2
+
+    assert within(s, ctx="a").value == 2
+
+
+def test_within_key_is_context_field():
+    """Querying a field that is itself the context field returns the context value."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.color = "red"
+        s.color = "blue"
+
+    assert within(s, color="red").color == "red"
+    assert within(s, color="blue").color == "blue"
+
+
+def test_within_multiple_ctx_never_simultaneously_satisfied():
+    """When two ctx fields never simultaneously hold their required values, raise."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.a = 1
+        s.b = 2  # a=1, b=2
+        s.a = 2  # a=2, b=2
+        s.b = 1  # a=2, b=1
+        s.value = 99
+
+    # a=1 and b=1 never hold simultaneously.
+    with pytest.raises(AttributeError):
+        _ = within(s, a=1, b=1).value
+
+
+def test_within_value_deleted_and_reset_during_ctx():
+    """If value is set, deleted, and re-set while ctx holds, return the final value."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.ctx = "a"
+        s.value = 1
+        del s.value
+        s.value = 2
+
+    assert within(s, ctx="a").value == 2
+
+
+def test_within_ctx_deleted_and_restored():
+    """When ctx is set, deleted, and set again to the same value, within returns
+    the value in effect at the latest re-entry of that ctx value."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.ctx = "a"
+        s.value = 1
+        del s.ctx
+        s.value = 2  # assigned while ctx is unavailable
+        s.ctx = "a"  # ctx restored; value is 2
+
+    assert within(s, ctx="a").value == 2
 
 
 def test_driver_ensure():

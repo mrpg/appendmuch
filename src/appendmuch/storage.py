@@ -443,14 +443,6 @@ class Store:
         if key not in latest_valid_state or latest_valid_state[key]["unavailable"]:
             raise _not_found()
 
-        if ctx and key not in ctx:
-            target_time = latest_valid_state[key]["time"]
-            for cond_field in ctx:
-                if cond_field in latest_valid_state:
-                    context_time = latest_valid_state[cond_field]["time"]
-                    if context_time > target_time:
-                        raise _not_found()
-
         result_data = latest_valid_state[key]["data"]
 
         if result_data is None:
