@@ -1,6 +1,6 @@
 [project]
 name = "appendmuch"
-version = "0.0.4"
+version = "0.0.5"
 description = "An extensible append-only log with in-memory cache and pluggable storage backends"
 readme = "README.md"
 license = "LGPL-3.0-or-later"
