@@ -46,18 +46,23 @@ def _update_sq(tbl: str) -> str:
 
 
 def _select_all(tbl: str) -> str:
-    return f"SELECT namespace, field, value, created_at, context FROM {tbl}"  # nosec B608
+    return f"SELECT namespace, field, value, created_at, context FROM {tbl} ORDER BY id ASC"  # nosec B608
 
 
 def _select_all_ordered(tbl: str) -> str:
-    return f"SELECT namespace, field, value, created_at, context FROM {tbl} ORDER BY created_at ASC"  # nosec B608
+    return f"SELECT id, namespace, field, value, created_at, context FROM {tbl} ORDER BY id ASC"  # nosec B608
 
 
 class DBDriver(ABC):
     def __init__(self) -> None:
         self.now: float = 0.0
+        self.seq: int = 0
         self.codec: Codec = Codec()
         self.replace_predicate: Callable[[str, str], bool] = lambda ns, f: False
+
+    def next_seq(self) -> int:
+        self.seq += 1
+        return self.seq
 
     @abstractmethod
     def size(self) -> int | None: ...
@@ -78,10 +83,10 @@ class DBDriver(ABC):
     def test_tables(self) -> None: ...
 
     @abstractmethod
-    def insert(self, namespace: str, field: str, data: Any, context: str) -> None: ...
+    def insert(self, namespace: str, field: str, data: Any, context: str) -> int: ...
 
     @abstractmethod
-    def delete(self, namespace: str, field: str, context: str) -> None: ...
+    def delete(self, namespace: str, field: str, context: str) -> int: ...
 
     @abstractmethod
     def history_all(self) -> Iterator[tuple[str, str, Value]]: ...
@@ -109,7 +114,7 @@ class Memory(DBDriver):
 
     def __init__(self) -> None:
         super().__init__()
-        self.log: dict[str, dict[str, list[tuple[float, bool, bytes | None, str]]]] = {}
+        self.log: dict[str, dict[str, list[tuple[int, float, bool, bytes | None, str]]]] = {}
 
     def close(self) -> None:
         pass
@@ -131,9 +136,9 @@ class Memory(DBDriver):
                         {
                             "namespace": namespace,
                             "field": field,
-                            "value": v[2],
-                            "created_at": v[0],
-                            "context": v[3],
+                            "value": v[3],
+                            "created_at": v[1],
+                            "context": v[4],
                         }
                     )
 
@@ -153,34 +158,43 @@ class Memory(DBDriver):
             if field not in self.log[namespace]:
                 self.log[namespace][field] = []
 
-            self.log[namespace][field].append((ts, raw_value is None, raw_value, ctx))
+            self.log[namespace][field].append((self.next_seq(), ts, raw_value is None, raw_value, ctx))
 
             if self.replace_predicate(namespace, field):
                 self.log[namespace][field] = self.log[namespace][field][-1:]
 
-    def insert(self, namespace: str, field: str, data: Any, context: str) -> None:
+    def insert(self, namespace: str, field: str, data: Any, context: str) -> int:
         if namespace not in self.log:
             self.log[namespace] = {}
         if field not in self.log[namespace]:
             self.log[namespace][field] = []
 
-        self.log[namespace][field].append((self.now, False, self.codec.encode(data), context))
+        seq = self.next_seq()
+        self.log[namespace][field].append((seq, self.now, False, self.codec.encode(data), context))
 
         if self.replace_predicate(namespace, field):
             self.log[namespace][field] = self.log[namespace][field][-1:]
 
-    def delete(self, namespace: str, field: str, context: str) -> None:
+        return seq
+
+    def delete(self, namespace: str, field: str, context: str) -> int:
         if namespace not in self.log or field not in self.log[namespace]:
             raise AttributeError(f"Key not found: ({namespace}, {field})")
 
-        self.log[namespace][field].append((self.now, True, None, context))
+        seq = self.next_seq()
+        self.log[namespace][field].append((seq, self.now, True, None, context))
+        return seq
 
     def history_all(self) -> Iterator[tuple[str, str, Value]]:
         for namespace, fields in self.log.items():
             for field, values in fields.items():
                 for value in values:
                     yield namespace, field, Value(
-                        value[0], value[1], self.codec.decode(value[2]) if value[2] is not None else None, value[3]
+                        value[1],
+                        value[2],
+                        self.codec.decode(value[3]) if value[3] is not None else None,
+                        value[4],
+                        seq=value[0],
                     )
 
 
@@ -422,8 +436,9 @@ class PostgreSQL(DBDriver):
             if batch:
                 cur.executemany(_insert_pg(self.table_name), batch)
 
-    def insert(self, namespace: str, field: str, data: Any, context: str) -> None:
+    def insert(self, namespace: str, field: str, data: Any, context: str) -> int:
         encoded = self.codec.encode(data)
+        seq = self.next_seq()
 
         if self.replace_predicate(namespace, field):
             if self.batch_inserts:
@@ -459,7 +474,10 @@ class PostgreSQL(DBDriver):
                 ):
                     self.process_batch(conn, cur)
 
-    def delete(self, namespace: str, field: str, context: str) -> None:
+        return seq
+
+    def delete(self, namespace: str, field: str, context: str) -> int:
+        seq = self.next_seq()
         self.batch_inserts.append((namespace, field, None, self.now, context))
 
         if self.should_flush_batch():
@@ -469,6 +487,8 @@ class PostgreSQL(DBDriver):
                 conn.cursor() as cur,
             ):
                 self.process_batch(conn, cur)
+
+        return seq
 
     def history_all(self) -> Iterator[tuple[str, str, Value]]:
         if self.batch_inserts:
@@ -485,7 +505,8 @@ class PostgreSQL(DBDriver):
             conn.cursor() as cur,
         ):
             cur.execute(_select_all_ordered(self.table_name))
-            for namespace, field, value, created_at, ctx in cur:
+            for row_id, namespace, field, value, created_at, ctx in cur:
+                self.seq = max(self.seq, row_id)
                 yield (
                     namespace,
                     field,
@@ -494,6 +515,7 @@ class PostgreSQL(DBDriver):
                         value is None,
                         self.codec.decode(value) if value is not None else None,
                         ctx,
+                        seq=row_id,
                     ),
                 )
 
@@ -698,8 +720,9 @@ class Sqlite3(DBDriver):
 
         conn.commit()
 
-    def insert(self, namespace: str, field: str, data: Any, context: str) -> None:
+    def insert(self, namespace: str, field: str, data: Any, context: str) -> int:
         encoded = self.codec.encode(data)
+        seq = self.next_seq()
 
         if self.replace_predicate(namespace, field):
             if self.batch_inserts:
@@ -722,11 +745,16 @@ class Sqlite3(DBDriver):
             if self.should_flush_batch():
                 self.process_batch(self.get_connection())
 
-    def delete(self, namespace: str, field: str, context: str) -> None:
+        return seq
+
+    def delete(self, namespace: str, field: str, context: str) -> int:
+        seq = self.next_seq()
         self.batch_inserts.append((namespace, field, None, self.now, context))
 
         if self.should_flush_batch():
             self.process_batch(self.get_connection())
+
+        return seq
 
     def history_all(self) -> Iterator[tuple[str, str, Value]]:
         if self.batch_inserts:
@@ -735,7 +763,8 @@ class Sqlite3(DBDriver):
         conn = self.get_connection()
         cursor = conn.execute(_select_all_ordered(self.table_name))
 
-        for namespace, field, value, created_at, ctx in cursor:
+        for row_id, namespace, field, value, created_at, ctx in cursor:
+            self.seq = max(self.seq, row_id)
             yield (
                 namespace,
                 field,
@@ -744,5 +773,6 @@ class Sqlite3(DBDriver):
                     value is None,
                     self.codec.decode(value) if value is not None else None,
                     ctx,
+                    seq=row_id,
                 ),
             )

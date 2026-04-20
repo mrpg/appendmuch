@@ -12,3 +12,4 @@ class Value:
     unavailable: bool = True
     data: Any | None = None
     context: str = ""
+    seq: int = 0

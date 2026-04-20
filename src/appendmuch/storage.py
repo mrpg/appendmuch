@@ -171,7 +171,7 @@ class Store:
             nested_dict = self.get_namespace(namespace, create=True)
 
             if nested_dict is not None and field not in nested_dict:
-                nested_dict[field] = SortedList(key=lambda v: v.time)
+                nested_dict[field] = SortedList(key=lambda v: v.seq)
 
             if nested_dict is not None:
                 nested_dict[field].add(value)
@@ -206,13 +206,7 @@ class Store:
         if not current or not isinstance(current, dict) or field not in current:
             return []
 
-        values = current[field]
-        if hasattr(values, "__iter__") and hasattr(values, "bisect_right"):
-            search_val = Value(since, True, None, "")
-            start_idx = values.bisect_right(search_val)
-            return list(values[start_idx:])
-
-        return [v for v in values if cast("float", v.time) > since]
+        return [v for v in current[field] if v.time is not None and cast("float", v.time) > since]
 
     def get_current_value(self, namespace: tuple[str, ...], field: str) -> Any:
         current = self.get_namespace(namespace)
@@ -291,17 +285,18 @@ class Store:
     ) -> Any:
         self.driver.now = time()
         immutable = self.codec.immutable_types()
-        self.driver.insert(dbns, key, value, ctx)
+        seq = self.driver.insert(dbns, key, value, ctx)
         nested_dict = self.get_namespace(namespace, create=True)
 
         if nested_dict is not None and key not in nested_dict:
-            nested_dict[key] = SortedList(key=lambda v: v.time)
+            nested_dict[key] = SortedList(key=lambda v: v.seq)
 
         new_value = Value(
             self.driver.now,
             False,
             safe_deepcopy(value, immutable),
             ctx,
+            seq=seq,
         )
 
         if nested_dict is not None:
@@ -327,12 +322,12 @@ class Store:
             raise AttributeError(f"Key not found: ({dbns}, {key})")
 
         self.driver.now = time()
-        self.driver.delete(dbns, key, ctx)
+        seq = self.driver.delete(dbns, key, ctx)
         nested_dict = self.get_namespace(namespace, create=True)
         if nested_dict is not None and key not in nested_dict:
-            nested_dict[key] = SortedList(key=lambda v: v.time)
+            nested_dict[key] = SortedList(key=lambda v: v.seq)
 
-        tombstone = Value(self.driver.now, True, None, ctx)
+        tombstone = Value(self.driver.now, True, None, ctx, seq=seq)
         if nested_dict is not None:
             nested_dict[key].add(tombstone)
 
@@ -347,7 +342,7 @@ class Store:
         current = self.get_namespace(namespace)
         if current and isinstance(current, dict) and key in current:
             return current[key]
-        return SortedList(key=lambda v: v.time)
+        return SortedList(key=lambda v: v.seq)
 
     def list_fields(
         self,
@@ -404,14 +399,14 @@ class Store:
                 for val in ns_[field]:
                     changes.append(
                         {
-                            "time": cast("float", val.time),
+                            "seq": val.seq,
                             "field": field,
                             "unavailable": val.unavailable,
                             "data": val.data,
                         }
                     )
 
-        changes.sort(key=lambda x: x["time"])
+        changes.sort(key=lambda x: x["seq"])
 
         current_state: dict[str, Any] = {}
         latest_valid_state = None
@@ -420,7 +415,6 @@ class Store:
             current_state[change["field"]] = {
                 "unavailable": change["unavailable"],
                 "data": change["data"],
-                "time": change["time"],
             }
 
             all_conditions_met = True
@@ -509,13 +503,12 @@ class AlongDescriptor:
         if not ns_ or not isinstance(ns_, dict):
             return
 
-        # Build timeline of context fields to know their state at any point.
-        ctx_changes: list[tuple[float, str, Any]] = []
+        ctx_changes: list[tuple[int, str, Any]] = []
         for cf in ctx:
             if cf in ns_:
                 for val in ns_[cf]:
                     if not val.unavailable:
-                        ctx_changes.append((cast("float", val.time), cf, val.data))
+                        ctx_changes.append((val.seq, cf, val.data))
         ctx_changes.sort()
 
         for value in cast(
@@ -524,11 +517,10 @@ class AlongDescriptor:
         ):
             if value.data is None:
                 continue
-            # Check: at the time this value was set, did all context conditions hold?
-            t = cast("float", value.time)
+            s = value.seq
             current_ctx: dict[str, Any] = {}
-            for ct, cf, cd in ctx_changes:
-                if ct > t:
+            for cs, cf, cd in ctx_changes:
+                if cs > s:
                     break
                 current_ctx[cf] = cd
             if all(current_ctx.get(cf) == cv for cf, cv in ctx.items()):
