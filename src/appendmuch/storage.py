@@ -301,7 +301,7 @@ class Store:
 
         if nested_dict is not None:
             if self.replace_predicate(dbns, key):
-                nested_dict[key] = SortedList([new_value], key=lambda v: v.time)
+                nested_dict[key] = SortedList([new_value], key=lambda v: v.seq)
             else:
                 nested_dict[key].add(new_value)
 

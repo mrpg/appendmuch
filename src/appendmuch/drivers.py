@@ -22,35 +22,35 @@ from appendmuch.types import Value
 from appendmuch.utils import SAFE_LIKE_PATTERN, ensure
 
 # SQL fragments shared across drivers
-_COLS = "(namespace, field, value, created_at, context)"
+_COLS = "(seq, namespace, field, value, created_at, context)"
 _INSERT_COLS = f"INSERT INTO {{tbl}} {_COLS}"
 
 
 def _insert_pg(tbl: str) -> str:
-    return f"{_INSERT_COLS.format(tbl=tbl)} VALUES (%s, %s, %s, %s, %s)"  # nosec B608
+    return f"{_INSERT_COLS.format(tbl=tbl)} VALUES (%s, %s, %s, %s, %s, %s)"  # nosec B608
 
 
 def _update_pg(tbl: str) -> str:
     return (
-        f"UPDATE {tbl} SET value = %s, created_at = %s, context = %s"  # nosec B608
+        f"UPDATE {tbl} SET seq = %s, value = %s, created_at = %s, context = %s"  # nosec B608
         f" WHERE namespace = %s AND field = %s"
     )
 
 
 def _insert_sq(tbl: str) -> str:
-    return f"{_INSERT_COLS.format(tbl=tbl)} VALUES (?, ?, ?, ?, ?)"  # nosec B608
+    return f"{_INSERT_COLS.format(tbl=tbl)} VALUES (?, ?, ?, ?, ?, ?)"  # nosec B608
 
 
 def _update_sq(tbl: str) -> str:
-    return f"UPDATE {tbl} SET value = ?, created_at = ?, context = ? WHERE namespace = ? AND field = ?"  # nosec B608
+    return f"UPDATE {tbl} SET seq = ?, value = ?, created_at = ?, context = ? WHERE namespace = ? AND field = ?"  # nosec B608
 
 
 def _select_all(tbl: str) -> str:
-    return f"SELECT namespace, field, value, created_at, context FROM {tbl} ORDER BY id ASC"  # nosec B608
+    return f"SELECT seq, namespace, field, value, created_at, context FROM {tbl} ORDER BY seq ASC"  # nosec B608
 
 
 def _select_all_ordered(tbl: str) -> str:
-    return f"SELECT id, namespace, field, value, created_at, context FROM {tbl} ORDER BY id ASC"  # nosec B608
+    return f"SELECT seq, namespace, field, value, created_at, context FROM {tbl} ORDER BY seq ASC"  # nosec B608
 
 
 class DBDriver(ABC):
@@ -129,18 +129,23 @@ class Memory(DBDriver):
         return None
 
     def dump(self) -> Iterator[bytes]:
+        rows: list[tuple[int, str, str, bytes | None, float, str]] = []
         for namespace, fields in self.log.items():
             for field, values in fields.items():
-                for v in values:
-                    yield msgpack.packb(
-                        {
-                            "namespace": namespace,
-                            "field": field,
-                            "value": v[3],
-                            "created_at": v[1],
-                            "context": v[4],
-                        }
-                    )
+                for seq, created_at, _unavailable, value, context in values:
+                    rows.append((seq, namespace, field, value, created_at, context))
+
+        for seq, namespace, field, value, created_at, context in sorted(rows, key=lambda row: row[0]):
+            yield msgpack.packb(
+                {
+                    "seq": seq,
+                    "namespace": namespace,
+                    "field": field,
+                    "value": value,
+                    "created_at": created_at,
+                    "context": context,
+                }
+            )
 
     def reset(self) -> None:
         self.log.clear()
@@ -152,13 +157,15 @@ class Memory(DBDriver):
             raw_value = row_dict["value"]
             ts = row_dict["created_at"]
             ctx = row_dict["context"]
+            seq = cast("int", row_dict["seq"])
+            self.seq = max(self.seq, seq)
 
             if namespace not in self.log:
                 self.log[namespace] = {}
             if field not in self.log[namespace]:
                 self.log[namespace][field] = []
 
-            self.log[namespace][field].append((self.next_seq(), ts, raw_value is None, raw_value, ctx))
+            self.log[namespace][field].append((seq, ts, raw_value is None, raw_value, ctx))
 
             if self.replace_predicate(namespace, field):
                 self.log[namespace][field] = self.log[namespace][field][-1:]
@@ -311,6 +318,13 @@ class PostgreSQL(DBDriver):
             )
             result = cur.fetchone()
             ensure(result and result[0] == 1, RuntimeError, "Table does not exist")
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                f"AND table_name = '{self.table_name}' "  # nosec B608
+                "AND column_name = 'seq'"
+            )
+            ensure(cur.fetchone() is not None, RuntimeError, "Table schema is missing seq column")
 
     def size(self) -> int | None:
         with (
@@ -336,6 +350,7 @@ class PostgreSQL(DBDriver):
             cur.execute(f"""
                 CREATE TABLE {self.table_name} (
                     id BIGSERIAL PRIMARY KEY,
+                    seq BIGINT NOT NULL UNIQUE,
                     namespace TEXT NOT NULL,
                     field TEXT NOT NULL,
                     value BYTEA,
@@ -367,9 +382,10 @@ class PostgreSQL(DBDriver):
             conn.cursor() as cur,
         ):
             cur.execute(_select_all(self.table_name))
-            for namespace, field, value, created_at, ctx in cur:
+            for seq, namespace, field, value, created_at, ctx in cur:
                 yield msgpack.packb(
                     {
+                        "seq": seq,
                         "namespace": namespace,
                         "field": field,
                         "value": value,
@@ -400,15 +416,19 @@ class PostgreSQL(DBDriver):
             for row_dict in unpacker:
                 namespace = row_dict["namespace"]
                 field = row_dict["field"]
+                seq = cast("int", row_dict["seq"])
+                self.seq = max(self.seq, seq)
 
                 if self.replace_predicate(namespace, field):
                     upsert_batch.append(
                         (
+                            seq,
                             row_dict["value"],
                             row_dict["created_at"],
                             row_dict["context"],
                             namespace,
                             field,
+                            seq,
                             namespace,
                             field,
                             row_dict["value"],
@@ -419,6 +439,7 @@ class PostgreSQL(DBDriver):
                 else:
                     batch.append(
                         (
+                            seq,
                             namespace,
                             field,
                             row_dict["value"],
@@ -429,9 +450,9 @@ class PostgreSQL(DBDriver):
 
             if upsert_batch:
                 for values in upsert_batch:
-                    cur.execute(_update_pg(self.table_name), values[:5])
+                    cur.execute(_update_pg(self.table_name), values[:6])
                     if cur.rowcount == 0:
-                        cur.execute(_insert_pg(self.table_name), values[5:])
+                        cur.execute(_insert_pg(self.table_name), values[6:])
 
             if batch:
                 cur.executemany(_insert_pg(self.table_name), batch)
@@ -456,15 +477,15 @@ class PostgreSQL(DBDriver):
             ):
                 cur.execute(
                     _update_pg(self.table_name),
-                    (encoded, self.now, context, namespace, field),
+                    (seq, encoded, self.now, context, namespace, field),
                 )
                 if cur.rowcount == 0:
                     cur.execute(
                         _insert_pg(self.table_name),
-                        (namespace, field, encoded, self.now, context),
+                        (seq, namespace, field, encoded, self.now, context),
                     )
         else:
-            self.batch_inserts.append((namespace, field, encoded, self.now, context))
+            self.batch_inserts.append((seq, namespace, field, encoded, self.now, context))
 
             if self.should_flush_batch():
                 with (
@@ -478,7 +499,7 @@ class PostgreSQL(DBDriver):
 
     def delete(self, namespace: str, field: str, context: str) -> int:
         seq = self.next_seq()
-        self.batch_inserts.append((namespace, field, None, self.now, context))
+        self.batch_inserts.append((seq, namespace, field, None, self.now, context))
 
         if self.should_flush_batch():
             with (
@@ -505,8 +526,8 @@ class PostgreSQL(DBDriver):
             conn.cursor() as cur,
         ):
             cur.execute(_select_all_ordered(self.table_name))
-            for row_id, namespace, field, value, created_at, ctx in cur:
-                self.seq = max(self.seq, row_id)
+            for seq, namespace, field, value, created_at, ctx in cur:
+                self.seq = max(self.seq, seq)
                 yield (
                     namespace,
                     field,
@@ -515,7 +536,7 @@ class PostgreSQL(DBDriver):
                         value is None,
                         self.codec.decode(value) if value is not None else None,
                         ctx,
-                        seq=row_id,
+                        seq=seq,
                     ),
                 )
 
@@ -619,6 +640,11 @@ class Sqlite3(DBDriver):
             f"SELECT name FROM sqlite_master WHERE type='table' AND name='{self.table_name}'"  # nosec B608
         )
         ensure(cursor.fetchone() is not None, RuntimeError, "Table does not exist")
+        ensure(
+            any(row[1] == "seq" for row in conn.execute(f"PRAGMA table_info({self.table_name})")),  # nosec B608
+            RuntimeError,
+            "Table schema is missing seq column",
+        )
 
     def size(self) -> int | None:
         conn = self.get_connection()
@@ -635,6 +661,7 @@ class Sqlite3(DBDriver):
         conn.execute(f"""
             CREATE TABLE {self.table_name} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seq INTEGER NOT NULL UNIQUE,
                 namespace TEXT NOT NULL,
                 field TEXT NOT NULL,
                 value BLOB,
@@ -658,9 +685,10 @@ class Sqlite3(DBDriver):
 
         conn = self.get_connection()
         cursor = conn.execute(_select_all(self.table_name))
-        for namespace, field, value, created_at, ctx in cursor:
+        for seq, namespace, field, value, created_at, ctx in cursor:
             yield msgpack.packb(
                 {
+                    "seq": seq,
                     "namespace": namespace,
                     "field": field,
                     "value": value,
@@ -682,15 +710,19 @@ class Sqlite3(DBDriver):
         for row_dict in unpacker:
             namespace = row_dict["namespace"]
             field = row_dict["field"]
+            seq = cast("int", row_dict["seq"])
+            self.seq = max(self.seq, seq)
 
             if self.replace_predicate(namespace, field):
                 upsert_batch.append(
                     (
+                        seq,
                         row_dict["value"],
                         row_dict["created_at"],
                         row_dict["context"],
                         namespace,
                         field,
+                        seq,
                         namespace,
                         field,
                         row_dict["value"],
@@ -701,6 +733,7 @@ class Sqlite3(DBDriver):
             else:
                 batch.append(
                     (
+                        seq,
                         namespace,
                         field,
                         row_dict["value"],
@@ -711,9 +744,9 @@ class Sqlite3(DBDriver):
 
         if upsert_batch:
             for values in upsert_batch:
-                cursor = conn.execute(_update_sq(self.table_name), values[:5])
+                cursor = conn.execute(_update_sq(self.table_name), values[:6])
                 if cursor.rowcount == 0:
-                    conn.execute(_insert_sq(self.table_name), values[5:])
+                    conn.execute(_insert_sq(self.table_name), values[6:])
 
         if batch:
             conn.executemany(_insert_sq(self.table_name), batch)
@@ -731,16 +764,16 @@ class Sqlite3(DBDriver):
             conn = self.get_connection()
             cursor = conn.execute(
                 _update_sq(self.table_name),
-                (encoded, self.now, context, namespace, field),
+                (seq, encoded, self.now, context, namespace, field),
             )
             if cursor.rowcount == 0:
                 conn.execute(
                     _insert_sq(self.table_name),
-                    (namespace, field, encoded, self.now, context),
+                    (seq, namespace, field, encoded, self.now, context),
                 )
             conn.commit()
         else:
-            self.batch_inserts.append((namespace, field, encoded, self.now, context))
+            self.batch_inserts.append((seq, namespace, field, encoded, self.now, context))
 
             if self.should_flush_batch():
                 self.process_batch(self.get_connection())
@@ -749,7 +782,7 @@ class Sqlite3(DBDriver):
 
     def delete(self, namespace: str, field: str, context: str) -> int:
         seq = self.next_seq()
-        self.batch_inserts.append((namespace, field, None, self.now, context))
+        self.batch_inserts.append((seq, namespace, field, None, self.now, context))
 
         if self.should_flush_batch():
             self.process_batch(self.get_connection())
@@ -763,8 +796,8 @@ class Sqlite3(DBDriver):
         conn = self.get_connection()
         cursor = conn.execute(_select_all_ordered(self.table_name))
 
-        for row_id, namespace, field, value, created_at, ctx in cursor:
-            self.seq = max(self.seq, row_id)
+        for seq, namespace, field, value, created_at, ctx in cursor:
+            self.seq = max(self.seq, seq)
             yield (
                 namespace,
                 field,
@@ -773,6 +806,6 @@ class Sqlite3(DBDriver):
                     value is None,
                     self.codec.decode(value) if value is not None else None,
                     ctx,
-                    seq=row_id,
+                    seq=seq,
                 ),
             )
