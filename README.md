@@ -1,6 +1,6 @@
 # appendmuch
 
-An extensible append-only log with in-memory cache and pluggable storage backends.
+An extensible append-only log with in-memory cache and pluggable storage backends. Ordering is based on a strict monotonic sequence counter, but timestamps are stored for informational purposes.
 
 ## Installation
 
@@ -63,7 +63,7 @@ customer.name_ = "John Doe"
 
 ## Temporal queries with `within`
 
-Every write is timestamped. Use `within` to query field values as they were when a condition held:
+Every write is assigned a monotonically increasing sequence number (and a timestamp for reference). Use `within` to query field values as they were when a condition held:
 
 ```python
 from appendmuch import within
@@ -90,7 +90,7 @@ player.__history__()["score"]
 # SortedKeyList([…, Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14'), …])
 ```
 
-A `Value` contains a `context`, indicating the approximate code location that triggered the change. Tombstones have `unavailable=True`.
+A `Value` contains a `context`, indicating the approximate code location that triggered the change. Tombstones have `unavailable=True`. The list is sorted by `seq` (sequence number), not by `time`.
 
 ## Virtual fields
 
