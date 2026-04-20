@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.11"
 
 [options]
-exclude-newer = "2026-04-09T23:52:01.27332083Z"
+exclude-newer = "2026-04-12T10:20:59.946690037Z"
 exclude-newer-span = "P8D"
 
 [[package]]
@@ -17,7 +17,7 @@ wheels = [
 
 [[package]]
 name = "appendmuch"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "msgpack" },
