@@ -646,8 +646,16 @@ class Storage:
         store: Store = object.__getattribute__(self, "__store__")
         immutable = store.codec.immutable_types()
 
+        is_immutable = isinstance(value, immutable)
+
+        if is_immutable and isinstance(value, (tuple, frozenset)):
+            try:
+                hash(value)
+            except TypeError:
+                is_immutable = False
+
         ensure(
-            isinstance(value, immutable) or self.__contexts__ > 0,
+            is_immutable or self.__contexts__ > 0,
             TypeError,
             f"This {self!r} must be wrapped in a context manager (use 'with') "
             f"because the field '{name}' is of a mutable type ({type(value).__name__}).",

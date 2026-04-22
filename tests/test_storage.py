@@ -66,6 +66,23 @@ def test_context_manager_immutable():
     assert s.x == 42  # immutable, no context needed
 
 
+def test_tuple_with_mutable_member_requires_context_and_flushes():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.x = (1, [2, 3])
+
+    with pytest.raises(TypeError, match="context manager"):
+        _ = s.x
+
+    with s:
+        value = s.x
+        value[1].append(4)
+
+    s.refresh("x")
+    with s:
+        assert s.x == (1, [2, 3, 4])
+
+
 def test_deep_change_detection():
     store = make_store()
     s = store.storage("ns", "test")

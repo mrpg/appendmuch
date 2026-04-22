@@ -32,6 +32,14 @@ def valid_token(x: str) -> bool:
 
 def safe_deepcopy(value: Any, immutable_types: tuple[type, ...]) -> Any:
     if isinstance(value, immutable_types):
+        if isinstance(value, (tuple, frozenset)):
+            try:
+                hash(value)
+
+                return value
+            except TypeError:
+                return copy.deepcopy(value)
+
         return value
 
     return copy.deepcopy(value)
