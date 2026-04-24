@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from appendmuch import Memory, Storage, Store, within
@@ -983,6 +985,93 @@ def test_explicit_set_then_mutate_flushes():
     extra_changes = [c for c in changes[initial_changes:] if c[0] == "x"]
     assert len(extra_changes) == 1
     assert extra_changes[0][1] == [1, 2, 3]
+
+
+def test_flush_skips_stale_mutation_after_external_write():
+    """A context must not write back a stale cached value over a newer external write."""
+    store = make_store()
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+
+    s1.x = [1]
+
+    with s1:
+        value = s1.x
+        s2.x = [9]
+        value.append(2)
+
+    assert [entry.data for entry in s1.__history__()["x"]] == [[1], [9]]
+
+
+def test_flush_skips_duplicate_write_when_external_change_matches_local_mutation():
+    """If another writer already persisted the same value, flush should not append it again."""
+    store = make_store()
+    changes = []
+    store.on_change = lambda ns, field, val: changes.append((field, val.data))
+
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+
+    s1.x = [1]
+
+    with s1:
+        value = s1.x
+        value.append(2)
+        s2.x = [1, 2]
+
+    x_changes = [value for field, value in changes if field == "x"]
+    assert x_changes == [[1], [1, 2]]
+    assert [entry.data for entry in s1.__history__()["x"]] == [[1], [1, 2]]
+
+
+def test_flush_skips_stale_post_assignment_mutation_after_external_write():
+    """If a field was assigned and then mutated locally, a newer external value wins."""
+    store = make_store()
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+
+    s1.x = [0]
+
+    with s1:
+        s1.x = [1]
+        s2.x = [9]
+        s1.x.append(2)
+
+    assert [entry.data for entry in s1.__history__()["x"]] == [[0], [1], [9]]
+
+
+def test_random_assignment_then_mutation_writes_exactly_twice():
+    """Stateful mutable values like random.Random should write once per real state change."""
+    store = make_store()
+    s = store.storage("ns", "test")
+    expected = random.Random(123)
+
+    with s:
+        s.rng = random.Random(123)
+        block = [1, 2, 3]
+        s.rng.shuffle(block)
+
+    expected.shuffle([1, 2, 3])
+    history = s.__history__()["rng"]
+    assert len(history) == 2
+    assert history[-1].data.getstate() == expected.getstate()
+
+
+def test_random_noop_context_does_not_add_third_write():
+    """Reading a stored RNG in a later context should not rewrite the same state."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.rng = random.Random(123)
+        s.rng.shuffle([1, 2, 3])
+
+    assert len(s.__history__()["rng"]) == 2
+
+    with s:
+        _ = s.rng
+
+    assert len(s.__history__()["rng"]) == 2
 
 
 def test_refresh_picks_up_external_write():

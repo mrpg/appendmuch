@@ -49,6 +49,16 @@ def flatten(d: dict[str, Any], trail: tuple[str, ...] = ()) -> dict[tuple[str, .
     return result
 
 
+def values_equal(codec: Codec, left: Any, right: Any) -> bool:
+    if left is right:
+        return True
+
+    try:
+        return codec.encode_raw(left) == codec.encode_raw(right)
+    except Exception:
+        return bool(left == right)
+
+
 class VirtualFields(dict[str, Callable[..., Any]]):
     """A dict subclass that doubles as a decorator for registering virtual fields.
 
@@ -745,15 +755,50 @@ class Storage:
 
         immutable = store.codec.immutable_types()
         all_fields = set(accessed_fields.keys()) | set(field_cache.keys())
+        missing = object()
 
         for field in all_fields:
             if field in field_cache:
                 current_value = field_cache[field]
-                original_value = accessed_fields.get(field)
+                original_value = accessed_fields.get(field, missing)
 
                 if field in explicitly_set:
                     assigned_value = assigned_values.get(field)
-                    if current_value is not assigned_value and current_value != assigned_value:
+                    if assigned_value is not None and not values_equal(store.codec, current_value, assigned_value):
+                        try:
+                            latest_value = store.db_request(self, "get", field)
+                        except AttributeError:
+                            latest_value = missing
+
+                        if latest_value is not missing and values_equal(store.codec, latest_value, assigned_value):
+                            store.db_request(
+                                self,
+                                "insert",
+                                field,
+                                current_value,
+                                ctx=context(currentframe()),
+                            )
+                            snapshot = safe_deepcopy(current_value, immutable)
+                        elif latest_value is not missing and values_equal(store.codec, latest_value, current_value):
+                            snapshot = safe_deepcopy(current_value, immutable)
+                        elif latest_value is missing:
+                            assigned_values.pop(field, None)
+                            accessed_fields.pop(field, None)
+                            continue
+                        else:
+                            snapshot = safe_deepcopy(latest_value, immutable)
+
+                        assigned_values[field] = snapshot
+                        accessed_fields[field] = snapshot
+                    continue
+
+                if original_value is not missing and not values_equal(store.codec, current_value, original_value):
+                    try:
+                        latest_value = store.db_request(self, "get", field)
+                    except AttributeError:
+                        latest_value = missing
+
+                    if latest_value is not missing and values_equal(store.codec, latest_value, original_value):
                         store.db_request(
                             self,
                             "insert",
@@ -761,20 +806,13 @@ class Storage:
                             current_value,
                             ctx=context(currentframe()),
                         )
-                        snapshot = safe_deepcopy(current_value, immutable)
-                        assigned_values[field] = snapshot
-                        accessed_fields[field] = snapshot
-                    continue
-
-                if original_value is not None and current_value != original_value:
-                    store.db_request(
-                        self,
-                        "insert",
-                        field,
-                        current_value,
-                        ctx=context(currentframe()),
-                    )
-                    accessed_fields[field] = safe_deepcopy(current_value, immutable)
+                        accessed_fields[field] = safe_deepcopy(current_value, immutable)
+                    elif latest_value is not missing and values_equal(store.codec, latest_value, current_value):
+                        accessed_fields[field] = safe_deepcopy(current_value, immutable)
+                    elif latest_value is missing:
+                        accessed_fields.pop(field, None)
+                    else:
+                        accessed_fields[field] = safe_deepcopy(latest_value, immutable)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Storage):
