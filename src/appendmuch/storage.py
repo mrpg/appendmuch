@@ -339,7 +339,10 @@ class Store:
 
         tombstone = Value(self.driver.now, True, None, ctx, seq=seq)
         if nested_dict is not None:
-            nested_dict[key].add(tombstone)
+            if self.replace_predicate(dbns, key):
+                nested_dict[key] = SortedList([tombstone], key=lambda v: v.seq)
+            else:
+                nested_dict[key].add(tombstone)
 
         if self.on_change is not None:
             self.on_change(namespace, key, tombstone)
@@ -447,12 +450,7 @@ class Store:
         if key not in latest_valid_state or latest_valid_state[key]["unavailable"]:
             raise _not_found()
 
-        result_data = latest_valid_state[key]["data"]
-
-        if result_data is None:
-            raise _not_found()
-
-        return result_data
+        return latest_valid_state[key]["data"]
 
 
 class within:  # noqa: N801
@@ -501,7 +499,7 @@ class AlongDescriptor:
             "list[Value]",
             storage.__store__.db_request(storage, "get_field_history", field),
         ):
-            if value.data is not None:
+            if not value.unavailable:
                 yield value.data, within(storage, **{field: value.data})
 
     @staticmethod
@@ -513,27 +511,29 @@ class AlongDescriptor:
         if not ns_ or not isinstance(ns_, dict):
             return
 
-        ctx_changes: list[tuple[int, str, Any]] = []
+        ctx_changes: list[tuple[int, str, bool, Any]] = []
         for cf in ctx:
             if cf in ns_:
                 for val in ns_[cf]:
-                    if not val.unavailable:
-                        ctx_changes.append((val.seq, cf, val.data))
+                    ctx_changes.append((val.seq, cf, val.unavailable, val.data))
         ctx_changes.sort()
 
         for value in cast(
             "list[Value]",
             store.db_request(storage, "get_field_history", field),
         ):
-            if value.data is None:
+            if value.unavailable:
                 continue
             s = value.seq
             current_ctx: dict[str, Any] = {}
-            for cs, cf, cd in ctx_changes:
+            for cs, cf, unavailable, cd in ctx_changes:
                 if cs > s:
                     break
-                current_ctx[cf] = cd
-            if all(current_ctx.get(cf) == cv for cf, cv in ctx.items()):
+                if unavailable:
+                    current_ctx.pop(cf, None)
+                else:
+                    current_ctx[cf] = cd
+            if all(cf in current_ctx and current_ctx[cf] == cv for cf, cv in ctx.items()):
                 yield value.data, within(storage, **{**ctx, field: value.data})
 
 

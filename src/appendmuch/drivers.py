@@ -12,8 +12,8 @@ data uses parameterized queries (%s or ?) to prevent SQL injection.
 import sqlite3
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
-from typing import Any, cast
+from collections.abc import Callable, Iterable, Iterator
+from typing import Any, Protocol, cast
 
 import msgpack
 
@@ -24,6 +24,10 @@ from appendmuch.utils import SAFE_LIKE_PATTERN, ensure
 # SQL fragments shared across drivers
 _COLS = "(seq, namespace, field, value, created_at, context)"
 _INSERT_COLS = f"INSERT INTO {{tbl}} {_COLS}"
+
+
+class ReadableBytes(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
 
 
 def _insert_pg(tbl: str) -> str:
@@ -53,6 +57,18 @@ def _select_all_ordered(tbl: str) -> str:
     return f"SELECT seq, namespace, field, value, created_at, context FROM {tbl} ORDER BY seq ASC"  # nosec B608
 
 
+def _iter_msgpack_rows(msgpack_stream: Iterable[bytes] | ReadableBytes) -> Iterator[dict[str, Any]]:
+    """Accept either a file-like object or an iterable of msgpack chunks."""
+    if hasattr(msgpack_stream, "read"):
+        yield from msgpack.Unpacker(cast("ReadableBytes", msgpack_stream), raw=False)
+        return
+
+    unpacker = msgpack.Unpacker(raw=False)
+    for chunk in msgpack_stream:
+        unpacker.feed(chunk)
+        yield from unpacker
+
+
 class DBDriver(ABC):
     def __init__(self) -> None:
         self.now: float = 0.0
@@ -71,7 +87,7 @@ class DBDriver(ABC):
     def dump(self) -> Iterator[bytes]: ...
 
     @abstractmethod
-    def restore(self, msgpack_stream: Iterator[bytes]) -> None: ...
+    def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None: ...
 
     @abstractmethod
     def reset(self) -> None: ...
@@ -150,9 +166,8 @@ class Memory(DBDriver):
     def reset(self) -> None:
         self.log.clear()
 
-    def restore(self, msgpack_stream: Iterator[bytes]) -> None:
-        unpacker = msgpack.Unpacker(msgpack_stream, raw=False)
-        for row_dict in unpacker:
+    def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
+        for row_dict in _iter_msgpack_rows(msgpack_stream):
             namespace, field = row_dict["namespace"], row_dict["field"]
             raw_value = row_dict["value"]
             ts = row_dict["created_at"]
@@ -190,6 +205,8 @@ class Memory(DBDriver):
 
         seq = self.next_seq()
         self.log[namespace][field].append((seq, self.now, True, None, context))
+        if self.replace_predicate(namespace, field):
+            self.log[namespace][field] = self.log[namespace][field][-1:]
         return seq
 
     def history_all(self) -> Iterator[tuple[str, str, Value]]:
@@ -394,7 +411,7 @@ class PostgreSQL(DBDriver):
                     }
                 )
 
-    def restore(self, msgpack_stream: Iterator[bytes]) -> None:
+    def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
         if self.batch_inserts:
             with (
                 self.pool.connection() as conn,
@@ -408,12 +425,10 @@ class PostgreSQL(DBDriver):
             conn.transaction(),
             conn.cursor() as cur,
         ):
-            unpacker = msgpack.Unpacker(msgpack_stream, raw=False)
-
             batch = []
             upsert_batch = []
 
-            for row_dict in unpacker:
+            for row_dict in _iter_msgpack_rows(msgpack_stream):
                 namespace = row_dict["namespace"]
                 field = row_dict["field"]
                 seq = cast("int", row_dict["seq"])
@@ -499,15 +514,39 @@ class PostgreSQL(DBDriver):
 
     def delete(self, namespace: str, field: str, context: str) -> int:
         seq = self.next_seq()
-        self.batch_inserts.append((seq, namespace, field, None, self.now, context))
+        if self.replace_predicate(namespace, field):
+            if self.batch_inserts:
+                with (
+                    self.pool.connection() as conn,
+                    conn.transaction(),
+                    conn.cursor() as cur,
+                ):
+                    self.process_batch(conn, cur)
 
-        if self.should_flush_batch():
             with (
                 self.pool.connection() as conn,
                 conn.transaction(),
                 conn.cursor() as cur,
             ):
-                self.process_batch(conn, cur)
+                cur.execute(
+                    _update_pg(self.table_name),
+                    (seq, None, self.now, context, namespace, field),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        _insert_pg(self.table_name),
+                        (seq, namespace, field, None, self.now, context),
+                    )
+        else:
+            self.batch_inserts.append((seq, namespace, field, None, self.now, context))
+
+            if self.should_flush_batch():
+                with (
+                    self.pool.connection() as conn,
+                    conn.transaction(),
+                    conn.cursor() as cur,
+                ):
+                    self.process_batch(conn, cur)
 
         return seq
 
@@ -697,17 +736,16 @@ class Sqlite3(DBDriver):
                 }
             )
 
-    def restore(self, msgpack_stream: Iterator[bytes]) -> None:
+    def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
         if self.batch_inserts:
             self.process_batch(self.get_connection())
 
         conn = self.get_connection()
-        unpacker = msgpack.Unpacker(msgpack_stream, raw=False)
 
         batch = []
         upsert_batch = []
 
-        for row_dict in unpacker:
+        for row_dict in _iter_msgpack_rows(msgpack_stream):
             namespace = row_dict["namespace"]
             field = row_dict["field"]
             seq = cast("int", row_dict["seq"])
@@ -782,10 +820,26 @@ class Sqlite3(DBDriver):
 
     def delete(self, namespace: str, field: str, context: str) -> int:
         seq = self.next_seq()
-        self.batch_inserts.append((seq, namespace, field, None, self.now, context))
+        if self.replace_predicate(namespace, field):
+            if self.batch_inserts:
+                self.process_batch(self.get_connection())
 
-        if self.should_flush_batch():
-            self.process_batch(self.get_connection())
+            conn = self.get_connection()
+            cursor = conn.execute(
+                _update_sq(self.table_name),
+                (seq, None, self.now, context, namespace, field),
+            )
+            if cursor.rowcount == 0:
+                conn.execute(
+                    _insert_sq(self.table_name),
+                    (seq, namespace, field, None, self.now, context),
+                )
+            conn.commit()
+        else:
+            self.batch_inserts.append((seq, namespace, field, None, self.now, context))
+
+            if self.should_flush_batch():
+                self.process_batch(self.get_connection())
 
         return seq
 
