@@ -753,7 +753,7 @@ class Storage:
 
                 if field in explicitly_set:
                     assigned_value = assigned_values.get(field)
-                    if current_value != assigned_value:
+                    if current_value is not assigned_value and current_value != assigned_value:
                         store.db_request(
                             self,
                             "insert",
@@ -761,7 +761,9 @@ class Storage:
                             current_value,
                             ctx=context(currentframe()),
                         )
-                    accessed_fields[field] = safe_deepcopy(current_value, immutable)
+                        snapshot = safe_deepcopy(current_value, immutable)
+                        assigned_values[field] = snapshot
+                        accessed_fields[field] = snapshot
                     continue
 
                 if original_value is not None and current_value != original_value:
