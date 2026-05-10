@@ -82,7 +82,7 @@ for round_val, ctx in within.along(player, "round"):
 
 ## Inspecting history
 
-Changes are appended to the database, never overwritten. The `__history__()` method on Storage instances returns a `dict` of `SortedList`s of `Value`s, a special validated type:
+Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a `dict` of `SortedList`s of `Value`s, a special validated type:
 
 ```python
 player.__history__()["score"]
