@@ -589,6 +589,12 @@ def test_invalid_namespace():
         store.storage("has space", "test")
 
 
+def test_empty_namespace_rejected():
+    store = make_store()
+    with pytest.raises(ValueError, match="invalid namespace"):
+        store.storage()
+
+
 def test_subclass_storage():
     """Test that Storage can be subclassed."""
     store = make_store()

@@ -560,7 +560,7 @@ class Storage:
         virtual: dict[str, Callable[[Self], Any]] | None = None,
     ) -> None:
         ensure(
-            all(type(t) is str and valid_token(t) for t in namespace),
+            bool(namespace) and all(type(t) is str and valid_token(t) for t in namespace),
             ValueError,
             f"{namespace!r} is an invalid namespace",
         )
