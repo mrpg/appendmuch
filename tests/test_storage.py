@@ -145,6 +145,21 @@ def test_history():
     assert len(history["x"]) == 3
 
 
+def test_history_return_is_structurally_immutable():
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.x = 1
+
+    history = s.__history__()
+    assert isinstance(history["x"], tuple)
+
+    with pytest.raises(TypeError):
+        history["y"] = ()
+
+    with pytest.raises(AttributeError):
+        history["x"].append(history["x"][0])
+
+
 def test_eq():
     store = make_store()
     s1 = store.storage("ns", "test")

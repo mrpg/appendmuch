@@ -2,6 +2,8 @@
 
 An extensible append-only log with in-memory cache and pluggable storage backends. Ordering is based on a strict monotonic sequence counter, but timestamps are stored for informational purposes.
 
+Appendmuch is intended for synchronous code or async applications that access a store from one event-loop thread. It is not safe for parallel processing: do not share a `Store` or driver across threads, processes, or concurrent workers without external serialization.
+
 ## Installation
 
 From PyPI:
@@ -82,15 +84,15 @@ for round_val, ctx in within.along(player, "round"):
 
 ## Inspecting history
 
-Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a `dict` of `SortedList`s of `Value`s, a special validated type:
+Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a read-only mapping of field names to tuples of `Value`s, a special validated type:
 
 ```python
 player.__history__()["score"]
 # Returns:
-# SortedKeyList([…, Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14'), …])
+# (Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14'), ...)
 ```
 
-A `Value` contains a `context`, indicating the approximate code location that triggered the change. Tombstones have `unavailable=True`. The list is sorted by `seq` (sequence number), not by `time`.
+A `Value` contains a `context`, indicating the approximate code location that triggered the change. Tombstones have `unavailable=True`. Each history tuple is sorted by `seq` (sequence number), not by `time`.
 
 ## Virtual fields
 

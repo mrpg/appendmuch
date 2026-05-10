@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from inspect import currentframe
 from time import time
+from types import MappingProxyType
 from typing import Any, Literal, Self, cast
 
 from sortedcontainers import SortedList
@@ -384,9 +385,14 @@ class Store:
     def get_full_history(
         self,
         namespace: tuple[str, ...],
-    ) -> dict[str, Any]:
+    ) -> MappingProxyType[str, tuple[Value, ...]]:
         current = self.get_namespace(namespace)
-        return current if current and isinstance(current, dict) else {}
+        if not current or not isinstance(current, dict):
+            return MappingProxyType({})
+
+        return MappingProxyType(
+            {field: tuple(values) for field, values in current.items() if isinstance(values, SortedList)}
+        )
 
     def resolve_within_context(
         self,
@@ -828,9 +834,9 @@ class Storage:
         store: Store = object.__getattribute__(self, "__store__")
         return cast("bool", store.db_request(self, "has_fields"))
 
-    def __history__(self) -> dict[str, list[Value]]:
+    def __history__(self) -> MappingProxyType[str, tuple[Value, ...]]:
         store: Store = object.__getattribute__(self, "__store__")
-        return cast("dict[str, list[Value]]", store.db_request(self, "history"))
+        return cast("MappingProxyType[str, tuple[Value, ...]]", store.db_request(self, "history"))
 
     def __repr__(self) -> str:
         return f"Storage{self.__namespace__}"
