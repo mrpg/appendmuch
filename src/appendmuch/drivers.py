@@ -282,20 +282,15 @@ class PostgreSQL(DBDriver):
     def process_batch(self, conn: Any, cur: Any) -> None:
         """Flush pending batch inserts.
 
-        Warning: On failure, the pending batch is cleared to prevent duplicate
-        writes on retry. Callers that need delivery guarantees should implement
-        their own write-ahead mechanism.
+        On failure, the pending batch is left intact so callers may retry or
+        inspect it.
         """
         if not self.batch_inserts:
             return
 
-        try:
-            cur.executemany(_insert_pg(self.table_name), self.batch_inserts)
-            self.batch_inserts.clear()
-            self.last_batch_time = time.time()
-        except Exception:
-            self.batch_inserts.clear()
-            raise
+        cur.executemany(_insert_pg(self.table_name), self.batch_inserts)
+        self.batch_inserts.clear()
+        self.last_batch_time = time.time()
 
     def should_flush_batch(self) -> bool:
         return len(self.batch_inserts) >= self.batch_size or time.time() - self.last_batch_time >= self.batch_timeout
@@ -643,21 +638,16 @@ class Sqlite3(DBDriver):
     def process_batch(self, conn: sqlite3.Connection) -> None:
         """Flush pending batch inserts.
 
-        Warning: On failure, the pending batch is cleared to prevent duplicate
-        writes on retry. Callers that need delivery guarantees should implement
-        their own write-ahead mechanism.
+        On failure, the pending batch is left intact so callers may retry or
+        inspect it.
         """
         if not self.batch_inserts:
             return
 
-        try:
-            conn.executemany(_insert_sq(self.table_name), self.batch_inserts)
-            conn.commit()
-            self.batch_inserts.clear()
-            self.last_batch_time = time.time()
-        except Exception:
-            self.batch_inserts.clear()
-            raise
+        conn.executemany(_insert_sq(self.table_name), self.batch_inserts)
+        conn.commit()
+        self.batch_inserts.clear()
+        self.last_batch_time = time.time()
 
     def should_flush_batch(self) -> bool:
         return len(self.batch_inserts) >= self.batch_size or time.time() - self.last_batch_time >= self.batch_timeout
