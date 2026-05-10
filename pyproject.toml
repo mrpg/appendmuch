@@ -47,6 +47,7 @@ testpaths = ["tests"]
 addopts = "--cov=appendmuch --cov-report=term-missing"
 
 [tool.mypy]
+files = ["src"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true
