@@ -1,6 +1,6 @@
 [project]
 name = "appendmuch"
-version = "0.0.7"
+version = "0.0.8"
 description = "An extensible append-only log with in-memory cache and pluggable storage backends"
 readme = "README.md"
 license = "LGPL-3.0-or-later"
@@ -10,32 +10,29 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.0",
-    "sortedcontainers>=2.4.0",
-    "msgpack>=1.0.0",
-    "orjson>=3.9.0",
+    "pydantic==2.13.4",
+    "sortedcontainers==2.4.0",
+    "msgpack==1.1.2",
+    "orjson==3.11.8",  # This works with rustc 1.90 available on OpenBSD (orjson>=3.11.9 requires rustc 1.95)
 ]
-
-[tool.uv]
-exclude-newer = "8 days"
 
 [project.optional-dependencies]
 sqlite = []
 pg = [
-    "psycopg>=3.1.0",
-    "psycopg-pool>=3.1.0",
+    "psycopg==3.3.4",
+    "psycopg-pool==3.3.1",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
-    "pytest-cov>=6.0",
-    "mypy>=1.10",
-    "ruff>=0.9",
-    "isort>=7.0.0",
-    "black>=24.0",
-    "bandit>=1.7",
-    "sortedcontainers-stubs>=2.4",
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
+    "mypy==2.1.0",
+    "ruff==0.15.15",
+    "isort==8.0.1",
+    "black==26.5.1",
+    "bandit==1.9.4",
+    "sortedcontainers-stubs==2.4.3",
 ]
 
 [build-system]
