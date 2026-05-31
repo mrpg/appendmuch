@@ -82,6 +82,21 @@ for round_val, ctx in within.along(player, "round"):
     print(f"Round {round_val}: score={ctx.score}")
 ```
 
+By default, `within` returns the value in effect while the context holds, even if that value was set before the context field. Use `within.strict` when the queried field must have been written under that context:
+
+```python
+player.treatment = "high"
+player.round = 1
+player.choice = "A"
+
+print(within(player, round=1).treatment)         # high
+print(within.strict(player, round=1).choice)     # A
+print(within.strict(player, round=1).get("treatment"))  # None
+
+for round_val, ctx in within.strict.along(player, "round"):
+    print(f"Round {round_val}: choice={ctx.choice}")
+```
+
 ## Inspecting history
 
 Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a read-only mapping of field names to tuples of `Value`s, a special validated type:

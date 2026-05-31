@@ -1137,3 +1137,190 @@ def test_refresh_uncached_field_is_noop():
     store = make_store()
     s = store.storage("ns", "test")
     s.refresh("nonexistent")  # should not raise
+
+
+def test_within_strict_rejects_value_set_before_context():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.choice = "A"
+        s.round = 1
+
+    assert within(s, round=1).choice == "A"
+    with pytest.raises(AttributeError):
+        _ = within.strict(s, round=1).choice
+
+
+def test_within_strict_accepts_value_set_after_context():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.choice = "A"
+
+    assert within.strict(s, round=1).choice == "A"
+
+
+def test_within_strict_across_rounds():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.choice = "A"
+        s.round = 2
+
+    assert within(s, round=2).choice == "A"
+    with pytest.raises(AttributeError):
+        _ = within.strict(s, round=2).choice
+
+    assert within.strict(s, round=1).choice == "A"
+
+
+def test_within_strict_with_value_in_both_rounds():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.choice = "A"
+        s.round = 2
+        s.choice = "B"
+
+    assert within.strict(s, round=1).choice == "A"
+    assert within.strict(s, round=2).choice == "B"
+
+
+def test_within_strict_rejects_value_from_between_context_windows():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.ctx = "a"
+        s.value = 1
+        s.ctx = "b"
+        s.value = 2
+        s.ctx = "a"
+
+    assert within(s, ctx="a").value == 2
+    with pytest.raises(AttributeError):
+        _ = within.strict(s, ctx="a").value
+
+
+def test_within_strict_get_returns_default():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.choice = "A"
+        s.round = 1
+
+    assert within.strict(s, round=1).get("choice", "default") == "default"
+
+
+def test_within_strict_treatment_carries_but_strict_rejects():
+    """Treatment set once before any round should be rejected in strict mode."""
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.treatment = "high"
+        s.round = 1
+        s.choice = "A"
+        s.round = 2
+        s.choice = "B"
+
+    assert within(s, round=1).treatment == "high"
+    assert within(s, round=2).treatment == "high"
+    with pytest.raises(AttributeError):
+        _ = within.strict(s, round=1).treatment
+    with pytest.raises(AttributeError):
+        _ = within.strict(s, round=2).treatment
+
+
+def test_along_strict_class_method():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.score = 10
+        s.round = 2
+        s.score = 20
+
+    results = list(within.strict.along(s, "round"))
+    assert len(results) == 2
+    assert results[0][1].score == 10
+    assert results[1][1].score == 20
+
+
+def test_along_strict_rejects_carried_value():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.score = 10
+        s.round = 1
+        s.round = 2
+
+    results = list(within.strict.along(s, "round"))
+    assert len(results) == 2
+    with pytest.raises(AttributeError):
+        _ = results[0][1].score
+    with pytest.raises(AttributeError):
+        _ = results[1][1].score
+
+
+def test_along_strict_instance_propagates():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.group = "X"
+        s.round = 1
+        s.score = 10
+        s.round = 2
+        s.score = 20
+
+    w = within.strict(s, group="X")
+    results = list(w.along("round"))
+    assert len(results) == 2
+    assert results[0][1].score == 10
+    assert results[1][1].score == 20
+    with pytest.raises(AttributeError):
+        _ = results[0][1].group
+
+
+def test_within_strict_is_valid_context_field_name():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.strict = True
+        s.choice = "A"
+
+    assert within(s, **{"strict": True}).choice == "A"
+    assert within(s, **{"strict": True}).strict is True
+
+
+def test_along_strict_field_name_does_not_collide_with_strict_mode():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.strict = True
+        s.score = 10
+
+    results = list(within.strict.along(s, "strict"))
+    assert len(results) == 1
+    assert results[0][0] is True
+    assert results[0][1].score == 10
+
+
+def test_within_strict_entry_point_is_stable_and_named():
+    assert within.strict is within.strict
+    assert repr(within.strict) == "within.strict"
+    assert callable(within.strict)
+    assert callable(within.strict.along)

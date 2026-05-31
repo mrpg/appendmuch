@@ -250,6 +250,7 @@ class Store:
             | dict[str, Any]
             | None
         ) = None,
+        strict: bool = False,  # TODO: Used in only one branch
     ) -> Any:
         ensure(
             key == "" or key.isidentifier(),
@@ -280,7 +281,7 @@ class Store:
             case "history", "", None:
                 rval = self.get_full_history(namespace)
             case "get_within_context", _, None if isinstance(extra, dict):
-                rval = self.resolve_within_context(namespace, key, extra)
+                rval = self.resolve_within_context(namespace, key, extra, strict=strict)
             case _, _, _:
                 raise NotImplementedError
 
@@ -399,6 +400,8 @@ class Store:
         namespace: tuple[str, ...],
         key: str,
         ctx: dict[str, Any],
+        *,
+        strict: bool = False,
     ) -> Any:
         def _not_found() -> AttributeError:
             return AttributeError(f"No value found for {key} within the specified context in namespace {namespace}")
@@ -429,6 +432,7 @@ class Store:
 
         current_state: dict[str, Any] = {}
         latest_valid_state = None
+        conditions_were_met = False
 
         for change in changes:
             current_state[change["field"]] = {
@@ -447,7 +451,14 @@ class Store:
                         all_conditions_met = False
                         break
 
-            if all_conditions_met:
+            if strict:
+                if all_conditions_met:
+                    if not conditions_were_met:
+                        latest_valid_state = None
+                    if change["field"] == key:
+                        latest_valid_state = copy.deepcopy(current_state)
+                conditions_were_met = all_conditions_met
+            elif all_conditions_met:
                 latest_valid_state = copy.deepcopy(current_state)
 
         if latest_valid_state is None:
@@ -463,11 +474,19 @@ class within:  # noqa: N801
     __slots__ = (
         "__context_fields__",
         "__storage__",
+        "__strict__",
     )
 
     def __init__(self, storage: "Storage", **ctx: Any) -> None:
         self.__storage__ = storage
         self.__context_fields__ = ctx
+        self.__strict__ = False
+
+    @classmethod
+    def _make(cls, storage: "Storage", ctx: dict[str, Any], *, strict: bool = False) -> Self:
+        instance = cls(storage, **ctx)
+        instance.__strict__ = strict
+        return instance
 
     def __getattr__(self, name: str) -> Any:
         return self.__storage__.__store__.db_request(
@@ -475,6 +494,7 @@ class within:  # noqa: N801
             "get_within_context",
             name,
             extra=self.__context_fields__,
+            strict=self.__strict__,
         )
 
     def get(self, name: str, default: Any = None) -> Any:
@@ -484,11 +504,43 @@ class within:  # noqa: N801
                 "get_within_context",
                 name,
                 extra=self.__context_fields__,
+                strict=self.__strict__,
             )
         except AttributeError:
             return default
 
     along: "AlongDescriptor"
+    strict: "StrictDescriptor"
+
+
+class StrictWithin:
+    """Callable strict-mode entry point exposed as ``within.strict``."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "within.strict"
+
+    def __call__(self, storage: "Storage", **ctx: Any) -> "within":
+        return within._make(storage, ctx, strict=True)
+
+    def along(self, storage: "Storage", field: str) -> Iterator[tuple[Any, "within"]]:
+        return AlongDescriptor._iter_class_along(storage, field, strict=True)
+
+
+class StrictDescriptor:
+    """Descriptor enabling ``within.strict(s, ...)`` without shadowing ``within(s).strict``."""
+
+    __slots__ = ("_strict",)
+
+    def __init__(self) -> None:
+        self._strict = StrictWithin()
+
+    def __get__(self, obj: "within | None", objtype: "type[within] | None" = None) -> StrictWithin:
+        if obj is not None:
+            raise AttributeError
+
+        return self._strict
 
 
 class AlongDescriptor:
@@ -501,12 +553,16 @@ class AlongDescriptor:
 
     @staticmethod
     def _class_along(storage: "Storage", field: str) -> Iterator[tuple[Any, "within"]]:
+        return AlongDescriptor._iter_class_along(storage, field, strict=False)
+
+    @staticmethod
+    def _iter_class_along(storage: "Storage", field: str, *, strict: bool) -> Iterator[tuple[Any, "within"]]:
         for value in cast(
             "list[Value]",
             storage.__store__.db_request(storage, "get_field_history", field),
         ):
             if not value.unavailable:
-                yield value.data, within(storage, **{field: value.data})
+                yield value.data, within._make(storage, {field: value.data}, strict=strict)
 
     @staticmethod
     def _instance_along(self: "within", field: str) -> Iterator[tuple[Any, "within"]]:
@@ -540,10 +596,11 @@ class AlongDescriptor:
                 else:
                     current_ctx[cf] = cd
             if all(cf in current_ctx and current_ctx[cf] == cv for cf, cv in ctx.items()):
-                yield value.data, within(storage, **{**ctx, field: value.data})
+                yield value.data, within._make(storage, {**ctx, field: value.data}, strict=self.__strict__)
 
 
 within.along = AlongDescriptor()
+within.strict = StrictDescriptor()
 
 
 class Storage:
