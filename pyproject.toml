@@ -1,6 +1,6 @@
 [project]
 name = "appendmuch"
-version = "0.0.8"
+version = "0.1.0"
 description = "An extensible append-only log with in-memory cache and pluggable storage backends"
 readme = "README.md"
 license = "LGPL-3.0-or-later"
@@ -10,29 +10,23 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic==2.13.4",
-    "sortedcontainers==2.4.0",
-    "msgpack==1.1.2",
-    "orjson==3.11.8",  # This works with rustc 1.90 available on OpenBSD (orjson>=3.11.9 requires rustc 1.95)
+    "msgpack>=1.0,<2",
+    "orjson>=3.11,<4",  # 3.11.8 still builds with rustc 1.90 (OpenBSD); newer releases work too
 ]
 
 [project.optional-dependencies]
-sqlite = []
 pg = [
-    "psycopg==3.3.4",
-    "psycopg-pool==3.3.1",
+    "psycopg>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
 ]
-
-[dependency-groups]
 dev = [
-    "pytest==9.0.3",
-    "pytest-cov==7.1.0",
-    "mypy==2.1.0",
-    "ruff==0.15.15",
-    "isort==8.0.1",
-    "black==26.5.1",
-    "bandit==1.9.4",
-    "sortedcontainers-stubs==2.4.3",
+    "pytest>=9.0",
+    "pytest-cov>=7.0",
+    "mypy>=2.0",
+    "ruff>=0.15",
+    "isort>=8.0",
+    "black>=26.0",
+    "bandit>=1.9",
 ]
 
 [build-system]
@@ -57,7 +51,7 @@ warn_unused_ignores = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["msgpack", "sortedcontainers", "psycopg_pool"]
+module = ["msgpack", "psycopg_pool"]
 ignore_missing_imports = true
 
 [tool.ruff]

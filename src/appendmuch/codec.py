@@ -24,6 +24,8 @@ class Codec:
     def __init__(self) -> None:
         # ordered list for isinstance dispatch (order matters: bool before int, etc.)
         self.ordered_encoders: list[tuple[type, int, Callable[[Any], bytes], Callable[[Any], bool] | None]] = []
+        # predicate-based entries only (checked first; empty for the built-in codec)
+        self.predicated_encoders: list[tuple[type, int, Callable[[Any], bytes], Callable[[Any], bool]]] = []
         # fast path for exact type match
         self.exact_encoders: dict[type, tuple[int, Callable[[Any], bytes]]] = {}
         # decoder dispatch by type id
@@ -76,14 +78,16 @@ class Codec:
 
         self.ordered_encoders.append((cls, type_id, encoder, predicate))
 
+        if predicate is not None:
+            self.predicated_encoders.append((cls, type_id, encoder, predicate))
         # only add to exact fast-path if no predicate (predicate entries need ordered check)
-        if predicate is None and cls not in self.exact_encoders:
+        elif cls not in self.exact_encoders:
             self.exact_encoders[cls] = (type_id, encoder)
 
     def encode(self, data: Any) -> bytes:
         """Encode a value to bytes with type ID prefix."""
         type_id, raw = self.encode_raw(data)
-        result = bytes([type_id]) + raw
+        result = bytes((type_id,)) + raw
 
         if self.vigilant and not (self.vigilant_skip is not None and self.vigilant_skip(data)):
             decoded = self.decode(result)
@@ -99,20 +103,21 @@ class Codec:
 
     def encode_raw(self, data: Any) -> tuple[int, bytes]:
         """Encode a value, returning (type_id, raw_bytes) separately."""
+        # predicate-based entries override everything else
+        # (e.g. list[PlayerIdentifier] vs plain list); empty unless registered
+        if self.predicated_encoders:
+            for cls, tid, enc, pred in self.predicated_encoders:
+                if isinstance(data, cls) and pred(data):
+                    return tid, enc(data)
+
         # fast path: exact type match (handles most common cases)
         exact = self.exact_encoders.get(type(data))
         if exact is not None:
-            type_id, encoder = exact
-            # check if there's a predicate-based entry that should override
-            # (e.g. list[PlayerIdentifier] vs plain list)
-            for cls, tid, enc, pred in self.ordered_encoders:
-                if pred is not None and isinstance(data, cls) and pred(data):
-                    return tid, enc(data)
-            return type_id, encoder(data)
+            return exact[0], exact[1](data)
 
-        # slow path: ordered isinstance chain
+        # slow path: ordered isinstance chain (subclasses of registered types)
         for cls, type_id, encoder, predicate in self.ordered_encoders:
-            if isinstance(data, cls) and (predicate is None or predicate(data)):
+            if predicate is None and isinstance(data, cls):
                 return type_id, encoder(data)
 
         raise NotImplementedError(f"{data} has invalid type: {type(data)}")

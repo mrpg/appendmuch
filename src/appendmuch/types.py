@@ -1,15 +1,14 @@
 # Copyright Max R. P. Grossmann & Holger Gerhardt, 2026.
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
+from dataclasses import dataclass
 from typing import Any
 
-from pydantic.dataclasses import dataclass as validated_dataclass
 
-
-@validated_dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Value:
     time: float | None = None
     unavailable: bool = True
-    data: Any | None = None
+    data: Any = None
     context: str = ""
     seq: int = 0

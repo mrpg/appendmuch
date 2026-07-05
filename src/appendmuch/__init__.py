@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
 from appendmuch.codec import Codec
-from appendmuch.drivers import DBDriver, Memory, PostgreSQL, Sqlite3
+from appendmuch.drivers import DBDriver, Memory, PostgreSQL, SQLDriver, Sqlite3
 from appendmuch.storage import Storage, Store, VirtualFields, dbns2tuple, flatten, tuple2dbns, within
 from appendmuch.types import Value
 from appendmuch.utils import safe_deepcopy
@@ -12,6 +12,7 @@ __all__ = [
     "DBDriver",
     "Memory",
     "PostgreSQL",
+    "SQLDriver",
     "Sqlite3",
     "Storage",
     "Store",
@@ -24,7 +25,7 @@ __all__ = [
     "within",
 ]
 
-__version_info__ = 0, 0, 8
+__version_info__ = 0, 1, 0
 __version__ = ".".join(map(str, __version_info__))
 __author__ = "Max R. P. Grossmann, Holger Gerhardt"
 __email__ = "appendmuch@grossmann.nexus"

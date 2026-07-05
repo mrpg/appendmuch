@@ -34,6 +34,8 @@ print(player.score)  # 100
 print(player.name)   # Alice
 ```
 
+Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `get`, `flush`, and `refresh` are `Storage` methods and cannot be used as field names. Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
+
 ## Mutable values
 
 Mutable values (lists, dicts, sets) require a context manager. Mutations are detected and persisted automatically on exit:
@@ -99,7 +101,7 @@ for round_val, ctx in within.strict.along(player, "round"):
 
 ## Inspecting history
 
-Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a read-only mapping of field names to tuples of `Value`s, a special validated type:
+Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a read-only mapping of field names to tuples of `Value`s, a small frozen dataclass:
 
 ```python
 player.__history__()["score"]
@@ -188,18 +190,22 @@ Support for other types can be registered using a custom codec. [Example.](https
 
 - `Memory`: in-memory, ideal for testing
 - `Sqlite3`: file-backed via SQLite (stdlib)
-- `PostgreSQL`: PostgreSQL with connection pooling (requires `psycopg`)
+- `PostgreSQL`: PostgreSQL with connection pooling (requires `psycopg`; install with `pip install "appendmuch[pg]"`)
+
+The SQL drivers batch writes (flushed after 100 rows or 0.1 s, whichever comes first, and on `close()`). Call `store.flush()` to force pending rows to durable storage at any point.
+
+Opening a `Store` on an existing database reuses it; the schema is only created when absent. If a table exists but has an incompatible schema, a `RuntimeError` is raised — data is never destroyed implicitly. Call `driver.reset()` explicitly to drop and recreate the schema.
+
+Custom SQL backends can subclass `appendmuch.SQLDriver`, which provides batching, replace-semantics upserts, dump/restore, and history iteration; only connection management and DDL are dialect-specific.
 
 ## Testing
 
 ```
-pytest                                    # core tests (Memory driver)
-pytest tests/test_driver_sqlite.py        # SQLite3 driver tests
-APPENDMUCH_PG_CONNINFO="dbname=mydb" \
-  pytest tests/test_driver_pg.py          # PostgreSQL driver tests
+pytest                                    # everything except PostgreSQL
+APPENDMUCH_PG_CONNINFO="dbname=mydb" pytest   # includes PostgreSQL driver tests
 ```
 
-PostgreSQL tests are skipped automatically when `APPENDMUCH_PG_CONNINFO` is not set.
+All storage backends are exercised through a shared behavioral contract (`tests/driver_contract.py`); adding a new driver means subclassing the contract and providing a `driver_factory` fixture. PostgreSQL tests are skipped automatically when `APPENDMUCH_PG_CONNINFO` is not set.
 
 ## License
 

@@ -6,22 +6,25 @@ Core storage module: Store (config + state), Storage (namespace accessor),
 within (contextual queries).
 """
 
-import copy
 import functools
 import weakref
-from collections.abc import Callable, Iterator, Sequence
+from bisect import insort
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from inspect import currentframe
+from operator import attrgetter, itemgetter
 from time import time
 from types import MappingProxyType
 from typing import Any, Literal, Self, cast
-
-from sortedcontainers import SortedList
 
 from appendmuch.codec import Codec
 from appendmuch.drivers import DBDriver
 from appendmuch.types import Value
 from appendmuch.utils import context, ensure, safe_deepcopy, valid_token
+
+_SEQ_KEY = attrgetter("seq")
+_BY_SEQ = itemgetter(0)
+_MISSING: Any = object()
 
 
 def tuple2dbns(ns: tuple[str, ...]) -> str:
@@ -60,6 +63,21 @@ def values_equal(codec: Codec, left: Any, right: Any) -> bool:
         return bool(left == right)
 
 
+def _append_by_seq(hist: list[Value], value: Value) -> None:
+    if hist and hist[-1].seq >= value.seq:
+        insort(hist, value, key=_SEQ_KEY)
+    else:
+        hist.append(value)
+
+
+def _sort_histories(node: dict[str, Any]) -> None:
+    for child in node.values():
+        if isinstance(child, list):
+            child.sort(key=_SEQ_KEY)
+        else:
+            _sort_histories(child)
+
+
 class VirtualFields(dict[str, Callable[..., Any]]):
     """A dict subclass that doubles as a decorator for registering virtual fields.
 
@@ -70,10 +88,12 @@ class VirtualFields(dict[str, Callable[..., Any]]):
         def score_doubled(p):
             return p.score * 2
 
+
         # 2. Decorator with explicit name
         @player.virtual("bonus")
         def compute_bonus(p):
             return p.score * 0.1
+
 
         # 3. Dict-style
         player.virtual["computed"] = lambda p: p.score + 10
@@ -83,10 +103,15 @@ class VirtualFields(dict[str, Callable[..., Any]]):
 
     _RESERVED: frozenset[str] | None = None
 
+    def __init__(self, initial: dict[str, Callable[..., Any]] | None = None) -> None:
+        super().__init__()
+        for name, func in (initial or {}).items():
+            self[name] = func
+
     @staticmethod
     def _reserved() -> frozenset[str]:
         if VirtualFields._RESERVED is None:
-            VirtualFields._RESERVED = frozenset(Storage.INTERNAL_ATTRS)
+            VirtualFields._RESERVED = Storage.INTERNAL_ATTRS | Storage.RESERVED_METHODS
         return VirtualFields._RESERVED
 
     def __setitem__(self, name: str, func: Callable[..., Any]) -> None:
@@ -95,8 +120,16 @@ class VirtualFields(dict[str, Callable[..., Any]]):
             ValueError,
             f"Virtual field name must be a valid identifier, got {name!r}",
         )
-        ensure(callable(func), TypeError, f"Virtual field must be callable, got {type(func).__name__}")
-        ensure(name not in self._reserved(), ValueError, f"Cannot use reserved name {name!r} as a virtual field")
+        ensure(
+            callable(func),
+            TypeError,
+            f"Virtual field must be callable, got {type(func).__name__}",
+        )
+        ensure(
+            name not in self._reserved(),
+            ValueError,
+            f"Cannot use reserved name {name!r} as a virtual field",
+        )
         super().__setitem__(name, func)
 
     def __call__(self, func_or_name: Callable[..., Any] | str) -> Any:
@@ -156,6 +189,10 @@ class Store:
     ) -> "Storage":
         return Storage(*namespace, store=self, virtual=virtual)
 
+    def flush(self) -> None:
+        """Force any batched driver writes to durable storage."""
+        self.driver.flush()
+
     def close(self) -> None:
         """Close the underlying driver and release resources."""
         if self._finalizer.detach():
@@ -179,13 +216,10 @@ class Store:
 
         for dbns, field, value in self.driver.history_all():
             namespace = dbns2tuple(dbns)
-            nested_dict = self.get_namespace(namespace, create=True)
+            hist = self._field_history(namespace, field, create=True)
+            hist.append(value)
 
-            if nested_dict is not None and field not in nested_dict:
-                nested_dict[field] = SortedList(key=lambda v: v.seq)
-
-            if nested_dict is not None:
-                nested_dict[field].add(value)
+        _sort_histories(self.cache)
 
     def get_namespace(
         self,
@@ -194,18 +228,54 @@ class Store:
     ) -> dict[str, Any] | None:
         current: Any = self.cache
 
-        for part in namespace:
+        for i, part in enumerate(namespace):
             if not isinstance(current, dict):
+                if create:
+                    raise ValueError(f"Namespace {namespace!r} collides with the field {namespace[i - 1]!r}")
                 return None
 
-            if create and part not in current:
+            if part not in current:
+                if not create:
+                    return None
                 current[part] = {}
-            elif part not in current:
-                return None
 
             current = current[part]
 
-        return cast("dict[str, Any] | None", current)
+        if not isinstance(current, dict):
+            if create:
+                raise ValueError(f"Namespace {namespace!r} collides with the field {namespace[-1]!r}")
+            return None
+
+        return cast("dict[str, Any]", current)
+
+    def _field_history(
+        self,
+        namespace: tuple[str, ...],
+        field: str,
+        *,
+        create: bool = False,
+    ) -> list[Value]:
+        """Return the history list for a field, optionally creating it.
+
+        Raises ValueError when the field name collides with a sub-namespace.
+        """
+        nested = self.get_namespace(namespace, create=create)
+        if nested is None:
+            return []
+
+        hist = nested.get(field)
+
+        if hist is None:
+            if not create:
+                return []
+            hist = nested[field] = []
+        elif not isinstance(hist, list):
+            # the name refers to a sub-namespace, not a field
+            if create:
+                raise ValueError(f"Field {field!r} collides with a sub-namespace of {namespace!r}")
+            return []
+
+        return hist
 
     def field_history_since(
         self,
@@ -213,138 +283,72 @@ class Store:
         field: str,
         since: float,
     ) -> list[Value]:
-        current = self.get_namespace(namespace)
-        if not current or not isinstance(current, dict) or field not in current:
-            return []
-
-        return [v for v in current[field] if v.time is not None and cast("float", v.time) > since]
+        return [v for v in self._field_history(namespace, field) if v.time is not None and v.time > since]
 
     def get_current_value(self, namespace: tuple[str, ...], field: str) -> Any:
-        current = self.get_namespace(namespace)
-        if (
-            current
-            and isinstance(current, dict)
-            and field in current
-            and hasattr(current[field], "__iter__")
-            and current[field]
-        ):
-            latest = current[field][-1]
+        hist = self._field_history(namespace, field)
+
+        if hist:
+            latest = hist[-1]
             if not latest.unavailable:
                 return safe_deepcopy(latest.data, self.codec.immutable_types())
 
         raise AttributeError(f"Key not found: ({namespace}, {field})")
 
-    def db_request(
-        self,
-        caller: "Storage | None",
-        action: str,
-        key: str = "",
-        value: Any | None = None,
-        *,
-        ctx: str | None = None,
-        extra: (
-            str
-            | tuple[list[str], str]
-            | tuple[Sequence[tuple[str, ...]], str]
-            | tuple[str, float]
-            | dict[str, Any]
-            | None
-        ) = None,
-        strict: bool = False,  # TODO: Used in only one branch
-    ) -> Any:
-        ensure(
-            key == "" or key.isidentifier(),
-            ValueError,
-            "Key must be empty or a valid identifier",
-        )
-        rval = None
-        namespace: tuple[str, ...] = ()
-
-        if caller is not None:
-            namespace = caller.__namespace__
-
-        dbns = tuple2dbns(namespace) if namespace else ""
-
-        match action, key, value:
-            case "insert", _, _ if isinstance(ctx, str):
-                rval = self.perform_insert(namespace, dbns, key, value, ctx)
-            case "delete", _, None if isinstance(ctx, str):
-                self.perform_delete(namespace, dbns, key, ctx)
-            case "get", _, None:
-                rval = self.get_current_value(namespace, key)
-            case "get_field_history", _, None:
-                rval = self.get_field_history(namespace, key)
-            case "fields", "", None:
-                rval = self.list_fields(namespace)
-            case "has_fields", "", None:
-                rval = self.check_has_fields(namespace)
-            case "history", "", None:
-                rval = self.get_full_history(namespace)
-            case "get_within_context", _, None if isinstance(extra, dict):
-                rval = self.resolve_within_context(namespace, key, extra, strict=strict)
-            case _, _, _:
-                raise NotImplementedError
-
-        return rval
-
-    def perform_insert(
+    def insert(
         self,
         namespace: tuple[str, ...],
         dbns: str,
         key: str,
         value: Any,
         ctx: str,
-    ) -> Any:
-        self.driver.now = time()
-        immutable = self.codec.immutable_types()
-        seq = self.driver.insert(dbns, key, value, ctx)
-        nested_dict = self.get_namespace(namespace, create=True)
+    ) -> None:
+        ensure(key.isidentifier(), ValueError, "Key must be a valid identifier")
 
-        if nested_dict is not None and key not in nested_dict:
-            nested_dict[key] = SortedList(key=lambda v: v.seq)
+        hist = self._field_history(namespace, key, create=True)
+        now = time()
+        seq = self.driver.insert(dbns, key, value, ctx, now)
 
         new_value = Value(
-            self.driver.now,
+            now,
             False,
-            safe_deepcopy(value, immutable),
+            safe_deepcopy(value, self.codec.immutable_types()),
             ctx,
             seq=seq,
         )
 
-        if nested_dict is not None:
-            if self.replace_predicate(dbns, key):
-                nested_dict[key] = SortedList([new_value], key=lambda v: v.seq)
-            else:
-                nested_dict[key].add(new_value)
+        if self.replace_predicate(dbns, key):
+            hist.clear()
+            hist.append(new_value)
+        else:
+            _append_by_seq(hist, new_value)
 
         if self.on_change is not None:
             self.on_change(namespace, key, new_value)
 
-        return value
-
-    def perform_delete(
+    def delete(
         self,
         namespace: tuple[str, ...],
         dbns: str,
         key: str,
         ctx: str,
     ) -> None:
-        ns_dict = self.get_namespace(namespace)
-        if ns_dict is None or key not in ns_dict:
+        ensure(key.isidentifier(), ValueError, "Key must be a valid identifier")
+
+        hist = self._field_history(namespace, key)
+        if not hist or hist[-1].unavailable:
             raise AttributeError(f"Key not found: ({dbns}, {key})")
 
-        self.driver.now = time()
-        seq = self.driver.delete(dbns, key, ctx)
-        nested_dict = self.get_namespace(namespace, create=True)
-        if nested_dict is not None and key not in nested_dict:
-            nested_dict[key] = SortedList(key=lambda v: v.seq)
+        now = time()
+        seq = self.driver.delete(dbns, key, ctx, now)
 
-        tombstone = Value(self.driver.now, True, None, ctx, seq=seq)
-        if nested_dict is not None:
-            if self.replace_predicate(dbns, key):
-                nested_dict[key] = SortedList([tombstone], key=lambda v: v.seq)
-            else:
-                nested_dict[key].add(tombstone)
+        tombstone = Value(now, True, None, ctx, seq=seq)
+
+        if self.replace_predicate(dbns, key):
+            hist.clear()
+            hist.append(tombstone)
+        else:
+            _append_by_seq(hist, tombstone)
 
         if self.on_change is not None:
             self.on_change(namespace, key, tombstone)
@@ -352,48 +356,43 @@ class Store:
     def get_field_history(
         self,
         namespace: tuple[str, ...],
-        key: str,
-    ) -> Any:
-        current = self.get_namespace(namespace)
-        if current and isinstance(current, dict) and key in current:
-            return current[key]
-        return SortedList(key=lambda v: v.seq)
+        field: str,
+    ) -> list[Value]:
+        return self._field_history(namespace, field)
 
     def list_fields(
         self,
         namespace: tuple[str, ...],
     ) -> list[str]:
         current = self.get_namespace(namespace)
-        if current and isinstance(current, dict):
-            result: list[str] = []
-            for field in current:
-                if hasattr(current[field], "__iter__") and current[field] and not current[field][-1].unavailable:
-                    result.append(field)
-            return result
-        return []
+        if not current:
+            return []
+
+        return [
+            field
+            for field, values in current.items()
+            if isinstance(values, list) and values and not values[-1].unavailable
+        ]
 
     def check_has_fields(
         self,
         namespace: tuple[str, ...],
     ) -> bool:
         current = self.get_namespace(namespace)
-        if current and isinstance(current, dict):
-            return any(
-                hasattr(values, "__iter__") and values and not values[-1].unavailable for values in current.values()
-            )
-        return False
+        if not current:
+            return False
+
+        return any(isinstance(values, list) and values and not values[-1].unavailable for values in current.values())
 
     def get_full_history(
         self,
         namespace: tuple[str, ...],
     ) -> MappingProxyType[str, tuple[Value, ...]]:
         current = self.get_namespace(namespace)
-        if not current or not isinstance(current, dict):
+        if not current:
             return MappingProxyType({})
 
-        return MappingProxyType(
-            {field: tuple(values) for field, values in current.items() if isinstance(values, SortedList)}
-        )
+        return MappingProxyType({field: tuple(values) for field, values in current.items() if isinstance(values, list)})
 
     def resolve_within_context(
         self,
@@ -408,66 +407,54 @@ class Store:
 
         ns_ = self.get_namespace(namespace)
 
-        if not ns_ or not isinstance(ns_, dict) or key not in ns_:
+        if not ns_ or not isinstance(ns_.get(key), list):
             raise _not_found()
 
         for cf in ctx:
-            if cf not in ns_:
+            if not isinstance(ns_.get(cf), list):
                 raise _not_found()
 
-        changes = []
+        events: list[tuple[int, str, bool, Any]] = []
         for field in {key, *ctx}:
-            if field in ns_:
-                for val in ns_[field]:
-                    changes.append(
-                        {
-                            "seq": val.seq,
-                            "field": field,
-                            "unavailable": val.unavailable,
-                            "data": val.data,
-                        }
-                    )
+            for val in ns_[field]:
+                events.append((val.seq, field, val.unavailable, val.data))
 
-        changes.sort(key=lambda x: x["seq"])
+        events.sort(key=_BY_SEQ)
 
-        current_state: dict[str, Any] = {}
-        latest_valid_state = None
-        conditions_were_met = False
+        # Single ordered pass: track whether each context condition currently
+        # holds, plus the current state of the queried key.
+        satisfied = dict.fromkeys(ctx, False)
+        unmet = len(ctx)
+        key_state: Any = _MISSING  # (unavailable, data) of key at this point
+        candidate: Any = _MISSING
+        prev_met = False
 
-        for change in changes:
-            current_state[change["field"]] = {
-                "unavailable": change["unavailable"],
-                "data": change["data"],
-            }
+        for _seq, field, unavailable, data in events:
+            if field in satisfied:
+                holds = not unavailable and data == ctx[field]
+                if holds != satisfied[field]:
+                    satisfied[field] = holds
+                    unmet += -1 if holds else 1
 
-            all_conditions_met = True
-            if ctx:
-                for cond_field, cond_value in ctx.items():
-                    if (
-                        cond_field not in current_state
-                        or current_state[cond_field]["unavailable"]
-                        or current_state[cond_field]["data"] != cond_value
-                    ):
-                        all_conditions_met = False
-                        break
+            if field == key:
+                key_state = (unavailable, data)
+
+            met = unmet == 0
 
             if strict:
-                if all_conditions_met:
-                    if not conditions_were_met:
-                        latest_valid_state = None
-                    if change["field"] == key:
-                        latest_valid_state = copy.deepcopy(current_state)
-                conditions_were_met = all_conditions_met
-            elif all_conditions_met:
-                latest_valid_state = copy.deepcopy(current_state)
+                if met:
+                    if not prev_met:
+                        candidate = _MISSING
+                    if field == key:
+                        candidate = key_state
+                prev_met = met
+            elif met:
+                candidate = key_state
 
-        if latest_valid_state is None:
+        if candidate is _MISSING or candidate[0]:
             raise _not_found()
 
-        if key not in latest_valid_state or latest_valid_state[key]["unavailable"]:
-            raise _not_found()
-
-        return latest_valid_state[key]["data"]
+        return safe_deepcopy(candidate[1], self.codec.immutable_types())
 
 
 class within:  # noqa: N801
@@ -489,23 +476,19 @@ class within:  # noqa: N801
         return instance
 
     def __getattr__(self, name: str) -> Any:
-        return self.__storage__.__store__.db_request(
-            self.__storage__,
-            "get_within_context",
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+
+        return self.__storage__.__store__.resolve_within_context(
+            self.__storage__.__namespace__,
             name,
-            extra=self.__context_fields__,
+            self.__context_fields__,
             strict=self.__strict__,
         )
 
     def get(self, name: str, default: Any = None) -> Any:
         try:
-            return self.__storage__.__store__.db_request(
-                self.__storage__,
-                "get_within_context",
-                name,
-                extra=self.__context_fields__,
-                strict=self.__strict__,
-            )
+            return self.__getattr__(name)
         except AttributeError:
             return default
 
@@ -557,46 +540,56 @@ class AlongDescriptor:
 
     @staticmethod
     def _iter_class_along(storage: "Storage", field: str, *, strict: bool) -> Iterator[tuple[Any, "within"]]:
-        for value in cast(
-            "list[Value]",
-            storage.__store__.db_request(storage, "get_field_history", field),
-        ):
+        store: Store = storage.__store__
+        immutable = store.codec.immutable_types()
+
+        for value in store.get_field_history(storage.__namespace__, field):
             if not value.unavailable:
-                yield value.data, within._make(storage, {field: value.data}, strict=strict)
+                yield (
+                    safe_deepcopy(value.data, immutable),
+                    within._make(storage, {field: value.data}, strict=strict),
+                )
 
     @staticmethod
-    def _instance_along(self: "within", field: str) -> Iterator[tuple[Any, "within"]]:
-        storage = self.__storage__
-        ctx = self.__context_fields__
-        store = storage.__store__
+    def _instance_along(instance: "within", field: str) -> Iterator[tuple[Any, "within"]]:
+        storage = instance.__storage__
+        ctx = instance.__context_fields__
+        store: Store = storage.__store__
         ns_ = store.get_namespace(storage.__namespace__)
-        if not ns_ or not isinstance(ns_, dict):
+        if not ns_:
             return
 
         ctx_changes: list[tuple[int, str, bool, Any]] = []
         for cf in ctx:
-            if cf in ns_:
-                for val in ns_[cf]:
+            hist = ns_.get(cf)
+            if isinstance(hist, list):
+                for val in hist:
                     ctx_changes.append((val.seq, cf, val.unavailable, val.data))
-        ctx_changes.sort()
+        ctx_changes.sort(key=_BY_SEQ)
 
-        for value in cast(
-            "list[Value]",
-            store.db_request(storage, "get_field_history", field),
-        ):
+        immutable = store.codec.immutable_types()
+        current_ctx: dict[str, Any] = {}
+        i = 0
+        n = len(ctx_changes)
+
+        for value in store.get_field_history(storage.__namespace__, field):
             if value.unavailable:
                 continue
-            s = value.seq
-            current_ctx: dict[str, Any] = {}
-            for cs, cf, unavailable, cd in ctx_changes:
-                if cs > s:
-                    break
+
+            # advance the context state up to (and including) this value's seq
+            while i < n and ctx_changes[i][0] <= value.seq:
+                _, cf, unavailable, cd = ctx_changes[i]
                 if unavailable:
                     current_ctx.pop(cf, None)
                 else:
                     current_ctx[cf] = cd
+                i += 1
+
             if all(cf in current_ctx and current_ctx[cf] == cv for cf, cv in ctx.items()):
-                yield value.data, within._make(storage, {**ctx, field: value.data}, strict=self.__strict__)
+                yield (
+                    safe_deepcopy(value.data, immutable),
+                    within._make(storage, {**ctx, field: value.data}, strict=instance.__strict__),
+                )
 
 
 within.along = AlongDescriptor()
@@ -604,17 +597,25 @@ within.strict = StrictDescriptor()
 
 
 class Storage:
-    INTERNAL_ATTRS = (
-        "__accessed_fields__",
-        "__contexts__",
-        "__field_cache__",
-        "__explicitly_set__",
-        "__assigned_values__",
-        "name",
-        "virtual",
-        "__namespace__",
-        "__store__",
+    INTERNAL_ATTRS = frozenset(
+        {
+            "__accessed_fields__",
+            "__contexts__",
+            "__field_cache__",
+            "__explicitly_set__",
+            "__assigned_values__",
+            "name",
+            "virtual",
+            "__namespace__",
+            "__dbns__",
+            "__store__",
+        }
     )
+
+    # method names that regular fields and virtual fields must not shadow
+    RESERVED_METHODS = frozenset({"get", "flush", "refresh"})
+
+    _PLAIN_ATTRS = frozenset({"name", "virtual"}) | RESERVED_METHODS
 
     def __init__(
         self,
@@ -637,6 +638,7 @@ class Storage:
 
         object.__setattr__(self, "name", namespace[-1])
         object.__setattr__(self, "__namespace__", namespace)
+        object.__setattr__(self, "__dbns__", tuple2dbns(namespace))
         object.__setattr__(self, "__store__", store)
         object.__setattr__(self, "__contexts__", 0)
         object.__setattr__(self, "__accessed_fields__", {})
@@ -670,6 +672,7 @@ class Storage:
                     "name",
                     "virtual",
                     "__namespace__",
+                    "__dbns__",
                     "__store__",
                 )
                 or not hasattr(self, name),
@@ -677,6 +680,9 @@ class Storage:
                 f"Attribute '{name}' is reserved and cannot be changed",
             )
             return object.__setattr__(self, name, value)
+
+        if name in type(self).RESERVED_METHODS:
+            raise AttributeError(f"'{name}' is a Storage method and cannot be used as a field name")
 
         virtual = object.__getattribute__(self, "virtual")
 
@@ -698,22 +704,24 @@ class Storage:
 
                     raise AttributeError(f"Cannot assign to '{name}'")
 
-        store: Store = object.__getattribute__(self, "__store__")
+        # object.__getattribute__ avoids re-entering our __getattribute__ hook
+        getattribute = object.__getattribute__
+        store: Store = getattribute(self, "__store__")
         immutable = store.codec.immutable_types()
 
-        newval = store.db_request(
-            self,
-            "insert",
+        store.insert(
+            getattribute(self, "__namespace__"),
+            getattribute(self, "__dbns__"),
             name,
             value,
-            ctx=context(currentframe()),
+            context(currentframe()),
         )
 
-        self.__field_cache__[name] = newval
-        if self.__contexts__ == 0:
-            self.__accessed_fields__[name] = safe_deepcopy(newval, immutable)
-        self.__explicitly_set__.add(name)
-        self.__assigned_values__[name] = safe_deepcopy(newval, immutable)
+        getattribute(self, "__field_cache__")[name] = value
+        if getattribute(self, "__contexts__") == 0:
+            getattribute(self, "__accessed_fields__")[name] = safe_deepcopy(value, immutable)
+        getattribute(self, "__explicitly_set__").add(name)
+        getattribute(self, "__assigned_values__")[name] = safe_deepcopy(value, immutable)
 
     def __guarded_return__(self, name: str, value: Any) -> Any:
         store: Store = object.__getattribute__(self, "__store__")
@@ -737,7 +745,7 @@ class Storage:
         return value
 
     def __getattribute__(self, name: str) -> Any:
-        if name in ("name", "virtual", "flush", "get", "refresh") or (name.startswith("__") and name.endswith("__")):
+        if name in Storage._PLAIN_ATTRS or (name.startswith("__") and name.endswith("__")):
             return object.__getattribute__(self, name)
 
         cls = type(self)
@@ -766,7 +774,7 @@ class Storage:
 
         try:
             store: Store = object.__getattribute__(self, "__store__")
-            value = store.db_request(self, "get", name)
+            value = store.get_current_value(object.__getattribute__(self, "__namespace__"), name)
             field_cache[name] = value
             if name not in accessed_fields:
                 accessed_fields[name] = safe_deepcopy(value, store.codec.immutable_types())
@@ -775,12 +783,18 @@ class Storage:
             raise AttributeError(f"{self} has no .{name}") from e
 
     def __delattr__(self, name: str) -> None:
-        store: Store = object.__getattribute__(self, "__store__")
-        store.db_request(self, "delete", name, None, ctx=context(currentframe()))
-        self.__field_cache__.pop(name, None)
-        self.__accessed_fields__.pop(name, None)
-        self.__explicitly_set__.discard(name)
-        self.__assigned_values__.pop(name, None)
+        getattribute = object.__getattribute__
+        store: Store = getattribute(self, "__store__")
+        store.delete(
+            getattribute(self, "__namespace__"),
+            getattribute(self, "__dbns__"),
+            name,
+            context(currentframe()),
+        )
+        getattribute(self, "__field_cache__").pop(name, None)
+        getattribute(self, "__accessed_fields__").pop(name, None)
+        getattribute(self, "__explicitly_set__").discard(name)
+        getattribute(self, "__assigned_values__").pop(name, None)
 
     def __enter__(self) -> Self:
         self.__contexts__ += 1
@@ -816,6 +830,8 @@ class Storage:
         except AttributeError:
             return
 
+        namespace = self.__namespace__
+        dbns = self.__dbns__
         immutable = store.codec.immutable_types()
         all_fields = set(accessed_fields.keys()) | set(field_cache.keys())
         missing = object()
@@ -829,17 +845,17 @@ class Storage:
                     assigned_value = assigned_values.get(field)
                     if assigned_value is not None and not values_equal(store.codec, current_value, assigned_value):
                         try:
-                            latest_value = store.db_request(self, "get", field)
+                            latest_value = store.get_current_value(namespace, field)
                         except AttributeError:
                             latest_value = missing
 
                         if latest_value is not missing and values_equal(store.codec, latest_value, assigned_value):
-                            store.db_request(
-                                self,
-                                "insert",
+                            store.insert(
+                                namespace,
+                                dbns,
                                 field,
                                 current_value,
-                                ctx=context(currentframe()),
+                                context(currentframe()),
                             )
                             snapshot = safe_deepcopy(current_value, immutable)
                         elif latest_value is not missing and values_equal(store.codec, latest_value, current_value):
@@ -857,17 +873,17 @@ class Storage:
 
                 if original_value is not missing and not values_equal(store.codec, current_value, original_value):
                     try:
-                        latest_value = store.db_request(self, "get", field)
+                        latest_value = store.get_current_value(namespace, field)
                     except AttributeError:
                         latest_value = missing
 
                     if latest_value is not missing and values_equal(store.codec, latest_value, original_value):
-                        store.db_request(
-                            self,
-                            "insert",
+                        store.insert(
+                            namespace,
+                            dbns,
                             field,
                             current_value,
-                            ctx=context(currentframe()),
+                            context(currentframe()),
                         )
                         accessed_fields[field] = safe_deepcopy(current_value, immutable)
                     elif latest_value is not missing and values_equal(store.codec, latest_value, current_value):
@@ -885,15 +901,15 @@ class Storage:
 
     def __fields__(self) -> list[str]:
         store: Store = object.__getattribute__(self, "__store__")
-        return cast("list[str]", store.db_request(self, "fields"))
+        return store.list_fields(self.__namespace__)
 
     def __bool__(self) -> bool:
         store: Store = object.__getattribute__(self, "__store__")
-        return cast("bool", store.db_request(self, "has_fields"))
+        return store.check_has_fields(self.__namespace__)
 
     def __history__(self) -> MappingProxyType[str, tuple[Value, ...]]:
         store: Store = object.__getattribute__(self, "__store__")
-        return cast("MappingProxyType[str, tuple[Value, ...]]", store.db_request(self, "history"))
+        return store.get_full_history(self.__namespace__)
 
     def __repr__(self) -> str:
         return f"Storage{self.__namespace__}"

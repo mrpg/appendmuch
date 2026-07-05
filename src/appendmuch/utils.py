@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
 import copy
-import inspect
 import re
 import string
 from types import FrameType
@@ -54,12 +53,8 @@ def context(frame: FrameType | None) -> str:
         if caller_frame is None:
             return "<unknown>"
 
-        caller_function = caller_frame.f_code.co_name
-        caller_lineno = caller_frame.f_lineno
+        module_name = caller_frame.f_globals.get("__name__", "<unknown>")
 
-        caller_module = inspect.getmodule(caller_frame)
-        module_name = caller_module.__name__ if caller_module else "<unknown>"
-
-        return f"{module_name}.{caller_function}:{caller_lineno}"
+        return f"{module_name}.{caller_frame.f_code.co_name}:{caller_frame.f_lineno}"
     except Exception:
         return "<unknown>"
