@@ -797,11 +797,13 @@ class Storage:
         getattribute(self, "__assigned_values__").pop(name, None)
 
     def __enter__(self) -> Self:
+        if self.__contexts__ == 0:
+            self.__field_cache__.clear()
+            self.__accessed_fields__.clear()
+            self.__explicitly_set__.clear()
+            self.__assigned_values__.clear()
+
         self.__contexts__ += 1
-        self.__field_cache__.clear()
-        self.__accessed_fields__.clear()
-        self.__explicitly_set__.clear()
-        self.__assigned_values__.clear()
 
         return self
 
@@ -813,10 +815,11 @@ class Storage:
     ) -> Literal[False]:
         self.__contexts__ -= 1
 
-        if exc_type is None:
-            self.flush()
+        if self.__contexts__ == 0:
+            if exc_type is None:
+                self.flush()
 
-        self.__field_cache__.clear()
+            self.__field_cache__.clear()
 
         return False
 

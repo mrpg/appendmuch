@@ -16,8 +16,14 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from orjson import dumps as jd
+from orjson import OPT_SORT_KEYS
+from orjson import dumps as orjson_dumps
 from orjson import loads as jl
+
+
+def jd(data: Any) -> bytes:
+    """Encode JSON with a stable representation for equal mappings."""
+    return orjson_dumps(data, option=OPT_SORT_KEYS)
 
 
 class Codec:
@@ -153,6 +159,11 @@ class Codec:
     def register_builtins(self) -> None:
         """Register all built-in Python types. Order matters for isinstance dispatch."""
 
+        def encode_unordered(items: set[Any] | frozenset[Any]) -> bytes:
+            """Encode unordered containers independently of iteration order."""
+            encoded_items = sorted(jd(item) for item in items)
+            return b"[" + b",".join(encoded_items) + b"]"
+
         # bool MUST come before int (bool is subclass of int)
         self.register(bool, 5, lambda d: jd(d), lambda r: jl(r))
 
@@ -197,7 +208,7 @@ class Codec:
         self.register(
             frozenset,
             9,
-            lambda d: jd(list(d)),
+            encode_unordered,
             lambda r: frozenset(jl(r)),
         )
 
@@ -243,7 +254,7 @@ class Codec:
             lambda r: bytearray(base64.b64decode(jl(r).encode("ascii"))),
             mutable=True,
         )
-        self.register(set, 131, lambda d: jd(list(d)), lambda r: set(jl(r)), mutable=True)
+        self.register(set, 131, encode_unordered, lambda r: set(jl(r)), mutable=True)
 
         # random.Random
         def encode_random(d: random.Random) -> bytes:

@@ -142,6 +142,37 @@ def test_encode_raw(codec):
     assert codec.decode(bytes([type_id]) + raw) == 42
 
 
+@pytest.mark.parametrize("base", [set, frozenset])
+def test_unordered_container_encoding_is_canonical(codec, base):
+    class Forward(base):
+        def __iter__(self):
+            return iter(sorted(base.__iter__(self)))
+
+    class Reverse(base):
+        def __iter__(self):
+            return iter(sorted(base.__iter__(self), reverse=True))
+
+    forward = Forward({0, 8, 16, 24})
+    reverse = Reverse(forward)
+
+    assert list(forward) == [0, 8, 16, 24]
+    assert list(reverse) == [24, 16, 8, 0]
+    assert codec.encode_raw(forward) == codec.encode_raw(reverse)
+
+
+@pytest.mark.parametrize(
+    ("forward", "reverse"),
+    [
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}),
+        ([{"a": 1, "b": 2}], [{"b": 2, "a": 1}]),
+        (({"a": 1, "b": 2},), ({"b": 2, "a": 1},)),
+    ],
+)
+def test_mapping_encoding_is_canonical(codec, forward, reverse):
+    assert forward == reverse
+    assert codec.encode_raw(forward) == codec.encode_raw(reverse)
+
+
 def test_unknown_type_raises(codec):
     with pytest.raises(NotImplementedError):
         codec.encode(object())

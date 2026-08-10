@@ -338,6 +338,24 @@ def test_context_manager_exception_no_flush():
     assert len(changes) == changes_after_set
 
 
+def test_nested_context_is_one_mutation_scope():
+    """Re-entering the same storage must not discard outer mutations."""
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.items = []
+
+    with s:
+        s.items.append("outer-before")
+
+        with s:
+            s.items.append("inner")
+
+        s.items.append("outer-after")
+
+    with s:
+        assert s.items == ["outer-before", "inner", "outer-after"]
+
+
 # --- flush semantics -----------------------------------------------------------
 
 
@@ -406,6 +424,49 @@ def test_flush_skips_duplicate_write_when_external_change_matches_local_mutation
     x_changes = [value for field, value in changes if field == "x"]
     assert x_changes == [[1], [1, 2]]
     assert [entry.data for entry in s1.__history__()["x"]] == [[1], [1, 2]]
+
+
+def test_flush_preserves_mutation_after_equivalent_external_set_write():
+    """Set iteration order must not turn an equivalent write into a conflict."""
+
+    class ForwardSet(set):
+        def __iter__(self):
+            return iter(sorted(set.__iter__(self)))
+
+    class ReverseSet(set):
+        def __iter__(self):
+            return iter(sorted(set.__iter__(self), reverse=True))
+
+    store = make_store()
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+    initial = ForwardSet({0, 8, 16, 24})
+
+    s1.x = initial
+
+    with s1:
+        s1.x.add(32)
+        s2.x = ReverseSet(initial)
+
+    history = [entry.data for entry in s1.__history__()["x"]]
+    assert history == [initial, initial, initial | {32}]
+
+
+def test_flush_preserves_mutation_after_equivalent_external_dict_write():
+    """Dict insertion order must not turn an equivalent write into a conflict."""
+    store = make_store()
+    s1 = store.storage("ns", "test")
+    s2 = store.storage("ns", "test")
+    initial = {"a": 1, "b": 2}
+
+    s1.x = initial
+
+    with s1:
+        s1.x["c"] = 3
+        s2.x = {"b": 2, "a": 1}
+
+    history = [entry.data for entry in s1.__history__()["x"]]
+    assert history == [initial, initial, {**initial, "c": 3}]
 
 
 def test_flush_skips_stale_post_assignment_mutation_after_external_write():
