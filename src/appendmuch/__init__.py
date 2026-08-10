@@ -25,7 +25,7 @@ __all__ = [
     "within",
 ]
 
-__version_info__ = 0, 1, 0
+__version_info__ = 0, 1, 1
 __version__ = ".".join(map(str, __version_info__))
 __author__ = "Max R. P. Grossmann, Holger Gerhardt"
 __email__ = "appendmuch@grossmann.nexus"
