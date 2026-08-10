@@ -27,6 +27,7 @@ dev = [
     "isort>=8.0",
     "black>=26.0",
     "bandit>=1.9",
+    "twine>=7.0.0",
 ]
 
 [build-system]
