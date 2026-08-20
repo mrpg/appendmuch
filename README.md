@@ -34,7 +34,7 @@ print(player.score)  # 100
 print(player.name)   # Alice
 ```
 
-Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `get`, `flush`, and `refresh` are `Storage` methods and cannot be used as field names. Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
+Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `get`, `flush`, `refresh`, `strict`, and `within` are `Storage` methods and cannot be used as field names. Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
 
 ## Mutable values
 
@@ -80,11 +80,18 @@ player.score = 25
 print(within(player, round=1).score)  # 10
 print(within(player, round=2).score)  # 25
 
+round_one = player.within(round=1)
+print(round_one.score)  # 10
+
 for round_val, ctx in within.along(player, "round"):
     print(f"Round {round_val}: score={ctx.score}")
+
+player.round = 1
+player.score = 30
+print(round_one.score)  # 30; live views reflect later matching writes
 ```
 
-By default, `within` returns the value in effect while the context holds, even if that value was set before the context field. Use `within.strict` when the queried field must have been written under that context:
+By default, `within` returns the value in effect while the context holds, even if that value was set earlier. Strict queries only return fields written while that context held. Use `within.strict(...)` or `storage.within(..., strict=True)`:
 
 ```python
 player.treatment = "high"
@@ -92,7 +99,7 @@ player.round = 1
 player.choice = "A"
 
 print(within(player, round=1).treatment)         # high
-print(within.strict(player, round=1).choice)     # A
+print(player.within(round=1, strict=True).choice)  # A
 print(within.strict(player, round=1).get("treatment"))  # None
 
 for round_val, ctx in within.strict.along(player, "round"):

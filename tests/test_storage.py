@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from appendmuch import Memory, Storage, Store, within
+from appendmuch import Memory, Storage, Store, View, within
 
 
 def make_store(**kwargs):
@@ -37,6 +37,24 @@ def test_get_with_default():
     s.x = 42
     assert s.get("nonexistent", "default") == "default"
     assert s.get("x", "default") == 42
+
+
+def test_get_only_resolves_fields():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    assert s.get("get") is None
+    assert s.get("__store__") is None
+    assert s.get("__class__") is None
+
+
+def test_get_resolves_field_shadowed_by_reserved_method():
+    store = make_store()
+    s = store.storage("ns", "test")
+    store.insert(("ns", "test"), "ns/test", "within", "stored value", "test setup")
+
+    assert callable(s.within)
+    assert s.get("within") == "stored value"
 
 
 def test_delete():
@@ -124,7 +142,7 @@ def test_reserved_names_rejected():
     store = make_store()
     s = store.storage("ns", "test")
 
-    for reserved in ("get", "flush", "refresh"):
+    for reserved in ("get", "flush", "refresh", "strict", "within"):
         with pytest.raises(AttributeError, match=r"reserved|method"):
             setattr(s, reserved, 1)
 
@@ -653,6 +671,117 @@ def test_virtual_validation():
         s.virtual = {}
 
 
+# --- View base class ----------------------------------------------------------------
+
+
+def test_within_is_a_view():
+    store = make_store()
+    s = store.storage("ns", "test")
+    assert isinstance(within(s), View)
+
+
+def test_view_get_only_uses_field_lookup():
+    class DescriptorView(View):
+        __slots__ = ()
+
+        @property
+        def label(self):
+            return "descriptor"
+
+        def __getattr__(self, name):
+            if name == "field":
+                return "stored field"
+            return super().__getattr__(name)
+
+    store = make_store()
+    view = DescriptorView(store.storage("ns", "test"))
+
+    assert view.label == "descriptor"
+    assert view.get("label", "default") == "default"
+    assert view.get("field") == "stored field"
+    assert view.get("missing", "default") == "default"
+
+
+def test_within_get_bypasses_descriptors_methods_and_internal_attributes():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.along = "field-named-along"
+
+    view = within(s, round=1)
+
+    assert callable(view.along)
+    assert view.get("along") == "field-named-along"
+    assert view.get("get") is None
+    assert view.get("__storage__") is None
+    assert view.get("__class__") is None
+
+
+def test_storage_within_returns_reusable_live_view():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.score = 10
+
+    history = s.within(round=1)
+    assert isinstance(history, View)
+    assert history.score == 10
+    assert history.score == 10
+
+    with s:
+        s.round = 2
+        s.score = 20
+        s.round = 1
+        s.score = 15
+
+    assert history.score == 15
+
+
+def test_storage_within_supports_strict_mode():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.treatment = "high"
+        s.round = 1
+        s.choice = "A"
+
+    history = s.within(round=1, strict=True)
+
+    assert history.choice == "A"
+    assert history.get("treatment") is None
+
+
+def test_view_rejects_setattr():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.score = 10
+
+    view = within(s, round=1)
+    with pytest.raises(AttributeError, match="read-only"):
+        view.score = 99
+
+
+def test_view_rejects_delattr():
+    store = make_store()
+    s = store.storage("ns", "test")
+
+    with s:
+        s.round = 1
+        s.score = 10
+
+    view = within(s, round=1)
+    with pytest.raises(AttributeError, match="read-only"):
+        del view.score
+
+
 # --- within (contextual queries) ----------------------------------------------------
 
 
@@ -955,18 +1084,6 @@ def test_within_strict_treatment_carries_but_strict_rejects():
         _ = within.strict(s, round=2).treatment
 
 
-def test_within_strict_is_valid_context_field_name():
-    store = make_store()
-    s = store.storage("ns", "test")
-
-    with s:
-        s.strict = True
-        s.choice = "A"
-
-    assert within(s, **{"strict": True}).choice == "A"
-    assert within(s, **{"strict": True}).strict is True
-
-
 def test_within_strict_entry_point_is_stable_and_named():
     assert within.strict is within.strict
     assert repr(within.strict) == "within.strict"
@@ -1152,20 +1269,6 @@ def test_along_strict_instance_propagates():
     assert [(v, ctx.score) for v, ctx in results] == [(1, 10), (2, 20)]
     with pytest.raises(AttributeError):
         _ = results[0][1].group
-
-
-def test_along_strict_field_name_does_not_collide_with_strict_mode():
-    store = make_store()
-    s = store.storage("ns", "test")
-
-    with s:
-        s.strict = True
-        s.score = 10
-
-    results = list(within.strict.along(s, "strict"))
-    assert len(results) == 1
-    assert results[0][0] is True
-    assert results[0][1].score == 10
 
 
 # --- codec integration -----------------------------------------------------------

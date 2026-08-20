@@ -3,7 +3,7 @@
 
 from appendmuch.codec import Codec
 from appendmuch.drivers import DBDriver, Memory, PostgreSQL, SQLDriver, Sqlite3
-from appendmuch.storage import Storage, Store, VirtualFields, dbns2tuple, flatten, tuple2dbns, within
+from appendmuch.storage import Storage, Store, View, VirtualFields, dbns2tuple, flatten, tuple2dbns, within
 from appendmuch.types import Value
 from appendmuch.utils import safe_deepcopy
 
@@ -17,6 +17,7 @@ __all__ = [
     "Storage",
     "Store",
     "Value",
+    "View",
     "VirtualFields",
     "dbns2tuple",
     "flatten",

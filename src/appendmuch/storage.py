@@ -8,6 +8,7 @@ within (contextual queries).
 
 import functools
 import weakref
+from abc import ABC, abstractmethod
 from bisect import insort
 from collections.abc import Callable, Iterator
 from contextlib import suppress
@@ -457,22 +458,54 @@ class Store:
         return safe_deepcopy(candidate[1], self.codec.immutable_types())
 
 
-class within:  # noqa: N801
+class View(ABC):
+    """Read-only view over a Storage namespace.
+
+    Subclasses must initialize any additional slots with ``object.__setattr__``.
+    """
+
+    __slots__ = ("__storage__",)
+
+    def __init__(self, storage: "Storage") -> None:
+        object.__setattr__(self, "__storage__", storage)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"{type(self).__name__} is a read-only view")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f"{type(self).__name__} is a read-only view")
+
+    @abstractmethod
+    def __getattr__(self, name: str) -> Any:
+        """Resolve a missing field, raising AttributeError when it does not exist."""
+        raise AttributeError(name)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        """Return a field, falling back to default when it is absent."""
+        if name.startswith("__") and name.endswith("__"):
+            return default
+
+        try:
+            return self.__getattr__(name)
+        except AttributeError:
+            return default
+
+
+class within(View):  # noqa: N801
     __slots__ = (
         "__context_fields__",
-        "__storage__",
         "__strict__",
     )
 
     def __init__(self, storage: "Storage", **ctx: Any) -> None:
-        self.__storage__ = storage
-        self.__context_fields__ = ctx
-        self.__strict__ = False
+        super().__init__(storage)
+        object.__setattr__(self, "__context_fields__", ctx)
+        object.__setattr__(self, "__strict__", False)
 
     @classmethod
     def _make(cls, storage: "Storage", ctx: dict[str, Any], *, strict: bool = False) -> Self:
         instance = cls(storage, **ctx)
-        instance.__strict__ = strict
+        object.__setattr__(instance, "__strict__", strict)
         return instance
 
     def __getattr__(self, name: str) -> Any:
@@ -485,12 +518,6 @@ class within:  # noqa: N801
             self.__context_fields__,
             strict=self.__strict__,
         )
-
-    def get(self, name: str, default: Any = None) -> Any:
-        try:
-            return self.__getattr__(name)
-        except AttributeError:
-            return default
 
     along: "AlongDescriptor"
     strict: "StrictDescriptor"
@@ -613,7 +640,7 @@ class Storage:
     )
 
     # method names that regular fields and virtual fields must not shadow
-    RESERVED_METHODS = frozenset({"get", "flush", "refresh"})
+    RESERVED_METHODS = frozenset({"get", "flush", "refresh", "strict", "within"})
 
     _PLAIN_ATTRS = frozenset({"name", "virtual"}) | RESERVED_METHODS
 
@@ -744,24 +771,8 @@ class Storage:
 
         return value
 
-    def __getattribute__(self, name: str) -> Any:
-        if name in Storage._PLAIN_ATTRS or (name.startswith("__") and name.endswith("__")):
-            return object.__getattribute__(self, name)
-
-        cls = type(self)
-
-        if cls is not Storage:
-            for klass in cls.__mro__:
-                if klass is Storage:
-                    break
-                if name in klass.__dict__:
-                    attr = klass.__dict__[name]
-
-                    if hasattr(attr, "__get__"):
-                        return attr.__get__(self, cls)
-
-                    return attr
-
+    def __get_field_value__(self, name: str) -> Any:
+        """Resolve a field without exposing methods or internal attributes."""
         accessed_fields = object.__getattribute__(self, "__accessed_fields__")
         field_cache = object.__getattribute__(self, "__field_cache__")
         virtual = object.__getattribute__(self, "virtual")
@@ -781,6 +792,26 @@ class Storage:
             return self.__guarded_return__(name, value)
         except AttributeError as e:
             raise AttributeError(f"{self} has no .{name}") from e
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in Storage._PLAIN_ATTRS or (name.startswith("__") and name.endswith("__")):
+            return object.__getattribute__(self, name)
+
+        cls = type(self)
+
+        if cls is not Storage:
+            for klass in cls.__mro__:
+                if klass is Storage:
+                    break
+                if name in klass.__dict__:
+                    attr = klass.__dict__[name]
+
+                    if hasattr(attr, "__get__"):
+                        return attr.__get__(self, cls)
+
+                    return attr
+
+        return object.__getattribute__(self, "__get_field_value__")(name)
 
     def __delattr__(self, name: str) -> None:
         getattribute = object.__getattribute__
@@ -928,8 +959,16 @@ class Storage:
         else:
             field_cache.clear()
 
+    def within(self, *, strict: bool = False, **ctx: Any) -> "within":
+        """Return a reusable contextual view over this namespace."""
+        return within._make(self, ctx, strict=strict)
+
     def get(self, name: str, default: Any = None) -> Any:
+        """Return a field, falling back to default when it is absent."""
+        if name.startswith("__") and name.endswith("__"):
+            return default
+
         try:
-            return getattr(self, name)
+            return object.__getattribute__(self, "__get_field_value__")(name)
         except AttributeError:
             return default
