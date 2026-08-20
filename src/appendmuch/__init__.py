@@ -3,7 +3,7 @@
 
 from appendmuch.codec import Codec
 from appendmuch.drivers import DBDriver, Memory, PostgreSQL, SQLDriver, Sqlite3
-from appendmuch.storage import Storage, Store, View, VirtualFields, dbns2tuple, flatten, tuple2dbns, within
+from appendmuch.storage import Storage, Store, View, VirtualFields, dbns2tuple, flatten, tuple2dbns
 from appendmuch.types import Value
 from appendmuch.utils import safe_deepcopy
 
@@ -23,10 +23,9 @@ __all__ = [
     "flatten",
     "safe_deepcopy",
     "tuple2dbns",
-    "within",
 ]
 
-__version_info__ = 0, 1, 1
+__version_info__ = 0, 2, 0
 __version__ = ".".join(map(str, __version_info__))
 __author__ = "Max R. P. Grossmann, Holger Gerhardt"
 __email__ = "appendmuch@grossmann.nexus"
