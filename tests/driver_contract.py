@@ -11,7 +11,7 @@ import io
 
 import pytest
 
-from appendmuch import Store, within
+from appendmuch import Store
 
 
 class DriverContract:
@@ -69,7 +69,7 @@ class DriverContract:
         s2 = store2.storage("ns", "test")
         s2.x = 3
 
-        seqs = [v.seq for v in s2.__history__()["x"]]
+        seqs = [v.seq for v in s2.history()["x"]]
         assert seqs == sorted(seqs)
         assert len(set(seqs)) == 3
         store2.close()
@@ -99,7 +99,7 @@ class DriverContract:
         s.keep = 1
         s.keep = 2
 
-        history = s.__history__()
+        history = s.history()
         assert len(history["latest"]) == 1
         assert history["latest"][-1].data == "v3"
         assert len(history["keep"]) == 2
@@ -126,8 +126,8 @@ class DriverContract:
             s.round = 2
             s.score = 20
 
-        assert within(s, round=1).score == 10
-        assert within(s, round=2).score == 20
+        assert s.within(round=1).score == 10
+        assert s.within(round=2).score == 20
 
     def test_history_all_is_seq_ordered(self, store):
         s = store.storage("ns", "test")

@@ -34,7 +34,7 @@ print(player.score)  # 100
 print(player.name)   # Alice
 ```
 
-Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `get`, `flush`, `refresh`, `strict`, and `within` are `Storage` methods and cannot be used as field names. Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
+Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `along`, `fields`, `flush`, `get`, `history`, `refresh`, `strict`, and `within` are reserved by `Storage` and cannot be used as field names. Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
 
 ## Mutable values
 
@@ -65,55 +65,56 @@ customer.age = 37
 customer.name_ = "John Doe"
 ```
 
-## Temporal queries with `within`
+## Temporal queries
 
-Every write is assigned a monotonically increasing sequence number (and a timestamp for reference). Use `within` to query field values as they were when a condition held:
+Every write is assigned a monotonically increasing sequence number (and a timestamp for reference). `Storage.within()` returns a reusable, live, read-only `View` of field values as they were when a condition held:
 
 ```python
-from appendmuch import within
-
+player.app = "my_game"
 player.round = 1
 player.score = 10
 player.round = 2
 player.score = 25
 
-print(within(player, round=1).score)  # 10
-print(within(player, round=2).score)  # 25
-
 round_one = player.within(round=1)
 print(round_one.score)  # 10
 
-for round_val, ctx in within.along(player, "round"):
-    print(f"Round {round_val}: score={ctx.score}")
+for round_val, view in player.along("round"):
+    print(f"Round {round_val}: score={view.score}")
+
+for round_val, view in player.within(app="my_game").along("round"):
+    print(f"Round {round_val}: score={view.score}")
 
 player.round = 1
 player.score = 30
 print(round_one.score)  # 30; live views reflect later matching writes
 ```
 
-By default, `within` returns the value in effect while the context holds, even if that value was set earlier. Strict queries only return fields written while that context held. Use `within.strict(...)` or `storage.within(..., strict=True)`:
+By default, a view returns the value in effect while its context holds, even if that value was set earlier. Strict queries only return fields written while that context held. Pass `strict=True` to `within()` or `along()`; chained `along()` calls inherit the view's strictness:
 
 ```python
 player.treatment = "high"
 player.round = 1
 player.choice = "A"
 
-print(within(player, round=1).treatment)         # high
+print(player.within(round=1).treatment)            # high
 print(player.within(round=1, strict=True).choice)  # A
-print(within.strict(player, round=1).get("treatment"))  # None
+print(player.within(round=1, strict=True).get("treatment"))  # None
 
-for round_val, ctx in within.strict.along(player, "round"):
-    print(f"Round {round_val}: choice={ctx.choice}")
+for round_val, view in player.along("round", strict=True):
+    print(f"Round {round_val}: choice={view.get('choice')}")
 ```
 
 ## Inspecting history
 
-Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `__history__()` method on Storage instances returns a read-only mapping of field names to tuples of `Value`s, a small frozen dataclass:
+Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `history()` method on `Storage` instances returns a read-only mapping of field names to tuples of `Value`s, a small frozen dataclass. `fields()` returns the names of the currently available fields:
 
 ```python
-player.__history__()["score"]
+player.history()["score"]
 # Returns:
 # (Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14'), ...)
+
+player.fields()  # ['app', 'round', 'score']
 ```
 
 A `Value` contains a `context`, indicating the approximate code location that triggered the change. Tombstones have `unavailable=True`. Each history tuple is sorted by `seq` (sequence number), not by `time`.

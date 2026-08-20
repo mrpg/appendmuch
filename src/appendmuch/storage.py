@@ -3,12 +3,10 @@
 
 """
 Core storage module: Store (config + state), Storage (namespace accessor),
-within (contextual queries).
+and View (contextual queries).
 """
 
-import functools
 import weakref
-from abc import ABC, abstractmethod
 from bisect import insort
 from collections.abc import Callable, Iterator
 from contextlib import suppress
@@ -458,55 +456,21 @@ class Store:
         return safe_deepcopy(candidate[1], self.codec.immutable_types())
 
 
-class View(ABC):
-    """Read-only view over a Storage namespace.
+class View:
+    """Live, read-only contextual view over a Storage namespace."""
 
-    Subclasses must initialize any additional slots with ``object.__setattr__``.
-    """
+    __slots__ = ("__context_fields__", "__storage__", "__strict__")
 
-    __slots__ = ("__storage__",)
-
-    def __init__(self, storage: "Storage") -> None:
+    def __init__(self, storage: "Storage", *, strict: bool = False, **context_fields: Any) -> None:
         object.__setattr__(self, "__storage__", storage)
+        object.__setattr__(self, "__context_fields__", context_fields)
+        object.__setattr__(self, "__strict__", strict)
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"{type(self).__name__} is a read-only view")
 
     def __delattr__(self, name: str) -> None:
         raise AttributeError(f"{type(self).__name__} is a read-only view")
-
-    @abstractmethod
-    def __getattr__(self, name: str) -> Any:
-        """Resolve a missing field, raising AttributeError when it does not exist."""
-        raise AttributeError(name)
-
-    def get(self, name: str, default: Any = None) -> Any:
-        """Return a field, falling back to default when it is absent."""
-        if name.startswith("__") and name.endswith("__"):
-            return default
-
-        try:
-            return self.__getattr__(name)
-        except AttributeError:
-            return default
-
-
-class within(View):  # noqa: N801
-    __slots__ = (
-        "__context_fields__",
-        "__strict__",
-    )
-
-    def __init__(self, storage: "Storage", **ctx: Any) -> None:
-        super().__init__(storage)
-        object.__setattr__(self, "__context_fields__", ctx)
-        object.__setattr__(self, "__strict__", False)
-
-    @classmethod
-    def _make(cls, storage: "Storage", ctx: dict[str, Any], *, strict: bool = False) -> Self:
-        instance = cls(storage, **ctx)
-        object.__setattr__(instance, "__strict__", strict)
-        return instance
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("__") and name.endswith("__"):
@@ -519,68 +483,20 @@ class within(View):  # noqa: N801
             strict=self.__strict__,
         )
 
-    along: "AlongDescriptor"
-    strict: "StrictDescriptor"
+    def get(self, name: str, default: Any = None) -> Any:
+        """Return a field, falling back to default when it is absent."""
+        if name.startswith("__") and name.endswith("__"):
+            return default
 
+        try:
+            return self.__getattr__(name)
+        except AttributeError:
+            return default
 
-class StrictWithin:
-    """Callable strict-mode entry point exposed as ``within.strict``."""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return "within.strict"
-
-    def __call__(self, storage: "Storage", **ctx: Any) -> "within":
-        return within._make(storage, ctx, strict=True)
-
-    def along(self, storage: "Storage", field: str) -> Iterator[tuple[Any, "within"]]:
-        return AlongDescriptor._iter_class_along(storage, field, strict=True)
-
-
-class StrictDescriptor:
-    """Descriptor enabling ``within.strict(s, ...)`` without shadowing ``within(s).strict``."""
-
-    __slots__ = ("_strict",)
-
-    def __init__(self) -> None:
-        self._strict = StrictWithin()
-
-    def __get__(self, obj: "within | None", objtype: "type[within] | None" = None) -> StrictWithin:
-        if obj is not None:
-            raise AttributeError
-
-        return self._strict
-
-
-class AlongDescriptor:
-    """Descriptor enabling both ``within.along(s, field)`` and ``within(s, …).along(field)``."""
-
-    def __get__(self, obj: "within | None", objtype: "type[within] | None" = None) -> Any:
-        if obj is None:
-            return self._class_along
-        return functools.partial(self._instance_along, obj)
-
-    @staticmethod
-    def _class_along(storage: "Storage", field: str) -> Iterator[tuple[Any, "within"]]:
-        return AlongDescriptor._iter_class_along(storage, field, strict=False)
-
-    @staticmethod
-    def _iter_class_along(storage: "Storage", field: str, *, strict: bool) -> Iterator[tuple[Any, "within"]]:
-        store: Store = storage.__store__
-        immutable = store.codec.immutable_types()
-
-        for value in store.get_field_history(storage.__namespace__, field):
-            if not value.unavailable:
-                yield (
-                    safe_deepcopy(value.data, immutable),
-                    within._make(storage, {field: value.data}, strict=strict),
-                )
-
-    @staticmethod
-    def _instance_along(instance: "within", field: str) -> Iterator[tuple[Any, "within"]]:
-        storage = instance.__storage__
-        ctx = instance.__context_fields__
+    def along(self, field: str) -> Iterator[tuple[Any, "View"]]:
+        """Iterate over values of field that occur within this view's context."""
+        storage = self.__storage__
+        ctx = self.__context_fields__
         store: Store = storage.__store__
         ns_ = store.get_namespace(storage.__namespace__)
         if not ns_:
@@ -613,14 +529,11 @@ class AlongDescriptor:
                 i += 1
 
             if all(cf in current_ctx and current_ctx[cf] == cv for cf, cv in ctx.items()):
+                next_context = {**ctx, field: value.data}
                 yield (
                     safe_deepcopy(value.data, immutable),
-                    within._make(storage, {**ctx, field: value.data}, strict=instance.__strict__),
+                    View(storage, strict=self.__strict__, **next_context),
                 )
-
-
-within.along = AlongDescriptor()
-within.strict = StrictDescriptor()
 
 
 class Storage:
@@ -640,7 +553,7 @@ class Storage:
     )
 
     # method names that regular fields and virtual fields must not shadow
-    RESERVED_METHODS = frozenset({"get", "flush", "refresh", "strict", "within"})
+    RESERVED_METHODS = frozenset({"along", "fields", "flush", "get", "history", "refresh", "strict", "within"})
 
     _PLAIN_ATTRS = frozenset({"name", "virtual"}) | RESERVED_METHODS
 
@@ -933,7 +846,8 @@ class Storage:
 
         return cast("bool", self.__namespace__ == other.__namespace__)
 
-    def __fields__(self) -> list[str]:
+    def fields(self) -> list[str]:
+        """Return the names of the currently available fields."""
         store: Store = object.__getattribute__(self, "__store__")
         return store.list_fields(self.__namespace__)
 
@@ -941,7 +855,8 @@ class Storage:
         store: Store = object.__getattribute__(self, "__store__")
         return store.check_has_fields(self.__namespace__)
 
-    def __history__(self) -> MappingProxyType[str, tuple[Value, ...]]:
+    def history(self) -> MappingProxyType[str, tuple[Value, ...]]:
+        """Return a read-only snapshot of this namespace's field histories."""
         store: Store = object.__getattribute__(self, "__store__")
         return store.get_full_history(self.__namespace__)
 
@@ -959,9 +874,13 @@ class Storage:
         else:
             field_cache.clear()
 
-    def within(self, *, strict: bool = False, **ctx: Any) -> "within":
+    def within(self, *, strict: bool = False, **ctx: Any) -> View:
         """Return a reusable contextual view over this namespace."""
-        return within._make(self, ctx, strict=strict)
+        return View(self, strict=strict, **ctx)
+
+    def along(self, field: str, *, strict: bool = False) -> Iterator[tuple[Any, View]]:
+        """Iterate over a field's history and its corresponding contextual views."""
+        return View(self, strict=strict).along(field)
 
     def get(self, name: str, default: Any = None) -> Any:
         """Return a field, falling back to default when it is absent."""

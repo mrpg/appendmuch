@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from appendmuch import Memory, Storage, Store, View, within
+from appendmuch import Memory, Storage, Store, View
 
 
 def make_store(**kwargs):
@@ -80,7 +80,7 @@ def test_delete_raises_like_python():
         del s.x
 
     # exactly one tombstone in history
-    assert sum(1 for v in s.__history__()["x"] if v.unavailable) == 1
+    assert sum(1 for v in s.history()["x"] if v.unavailable) == 1
 
 
 def test_insert_rejects_invalid_key():
@@ -142,12 +142,11 @@ def test_reserved_names_rejected():
     store = make_store()
     s = store.storage("ns", "test")
 
-    for reserved in ("get", "flush", "refresh", "strict", "within"):
+    for reserved in ("along", "fields", "flush", "get", "history", "refresh", "strict", "within"):
         with pytest.raises(AttributeError, match=r"reserved|method"):
             setattr(s, reserved, 1)
-
-    with pytest.raises(ValueError, match="reserved"):
-        s.virtual["get"] = lambda p: 1
+        with pytest.raises(ValueError, match="reserved"):
+            s.virtual[reserved] = lambda p: 1
 
     with pytest.raises(ValueError, match="reserved"):
         store.storage("ns", "reserved_virtual", virtual={"get": lambda p: 1})
@@ -166,14 +165,14 @@ def test_sub_namespaces_are_not_fields():
     p = store.storage("game", "p1")
     p.y = 2
 
-    assert g.__fields__() == []
+    assert g.fields() == []
     assert not bool(g)  # only a sub-namespace exists, no fields
     assert store.field_history_since(("game",), "p1", 0.0) == []
 
     g.x = 1
-    assert g.__fields__() == ["x"]
+    assert g.fields() == ["x"]
     assert bool(g)
-    assert set(g.__history__().keys()) == {"x"}
+    assert set(g.history().keys()) == {"x"}
 
 
 def test_namespace_field_collision():
@@ -196,14 +195,14 @@ def test_namespace_field_collision():
 def test_fields():
     store = make_store()
     s = store.storage("ns", "test")
-    assert s.__fields__() == []
+    assert s.fields() == []
 
     s.a = 1
     s.b = 2
-    assert set(s.__fields__()) == {"a", "b"}
+    assert set(s.fields()) == {"a", "b"}
 
     del s.a
-    assert s.__fields__() == ["b"]
+    assert s.fields() == ["b"]
 
 
 def test_bool():
@@ -217,13 +216,13 @@ def test_bool():
 def test_history():
     store = make_store()
     s = store.storage("ns", "empty")
-    assert s.__history__() == {}
+    assert s.history() == {}
 
     s = store.storage("ns", "test")
     s.x = 1
     s.x = 2
     s.x = 3
-    history = s.__history__()
+    history = s.history()
     assert [v.data for v in history["x"]] == [1, 2, 3]
 
 
@@ -232,7 +231,7 @@ def test_history_return_is_structurally_immutable():
     s = store.storage("ns", "test")
     s.x = 1
 
-    history = s.__history__()
+    history = s.history()
     assert isinstance(history["x"], tuple)
 
     with pytest.raises(TypeError):
@@ -252,7 +251,7 @@ def test_field_history_since():
     s = store.storage("ns", "test")
     s.x = 1
 
-    first_time = s.__history__()["x"][0].time
+    first_time = s.history()["x"][0].time
     s.x = 2
     s.x = 3
 
@@ -277,7 +276,7 @@ def test_load_sorts_histories():
         s.y = -i
 
     store.load()
-    hist = store.storage("ns", "test").__history__()
+    hist = store.storage("ns", "test").history()
     assert [v.data for v in hist["x"]] == list(range(50))
     seqs = [v.seq for v in hist["y"]]
     assert seqs == sorted(seqs)
@@ -420,7 +419,7 @@ def test_flush_skips_stale_mutation_after_external_write():
         s2.x = [9]
         value.append(2)
 
-    assert [entry.data for entry in s1.__history__()["x"]] == [[1], [9]]
+    assert [entry.data for entry in s1.history()["x"]] == [[1], [9]]
 
 
 def test_flush_skips_duplicate_write_when_external_change_matches_local_mutation():
@@ -441,7 +440,7 @@ def test_flush_skips_duplicate_write_when_external_change_matches_local_mutation
 
     x_changes = [value for field, value in changes if field == "x"]
     assert x_changes == [[1], [1, 2]]
-    assert [entry.data for entry in s1.__history__()["x"]] == [[1], [1, 2]]
+    assert [entry.data for entry in s1.history()["x"]] == [[1], [1, 2]]
 
 
 def test_flush_preserves_mutation_after_equivalent_external_set_write():
@@ -466,7 +465,7 @@ def test_flush_preserves_mutation_after_equivalent_external_set_write():
         s1.x.add(32)
         s2.x = ReverseSet(initial)
 
-    history = [entry.data for entry in s1.__history__()["x"]]
+    history = [entry.data for entry in s1.history()["x"]]
     assert history == [initial, initial, initial | {32}]
 
 
@@ -483,7 +482,7 @@ def test_flush_preserves_mutation_after_equivalent_external_dict_write():
         s1.x["c"] = 3
         s2.x = {"b": 2, "a": 1}
 
-    history = [entry.data for entry in s1.__history__()["x"]]
+    history = [entry.data for entry in s1.history()["x"]]
     assert history == [initial, initial, {**initial, "c": 3}]
 
 
@@ -500,7 +499,7 @@ def test_flush_skips_stale_post_assignment_mutation_after_external_write():
         s2.x = [9]
         s1.x.append(2)
 
-    assert [entry.data for entry in s1.__history__()["x"]] == [[0], [1], [9]]
+    assert [entry.data for entry in s1.history()["x"]] == [[0], [1], [9]]
 
 
 def test_random_write_semantics():
@@ -516,14 +515,14 @@ def test_random_write_semantics():
         s.rng.shuffle(block)
 
     expected.shuffle([1, 2, 3])
-    history = s.__history__()["rng"]
+    history = s.history()["rng"]
     assert len(history) == 2  # assignment + mutation
     assert history[-1].data.getstate() == expected.getstate()
 
     with s:
         _ = s.rng  # read-only context
 
-    assert len(s.__history__()["rng"]) == 2  # no third write
+    assert len(s.history()["rng"]) == 2  # no third write
 
 
 # --- refresh --------------------------------------------------------------------
@@ -579,7 +578,7 @@ def test_replace_predicate():
     s.normal = "v1"
     s.normal = "v2"
 
-    history = s.__history__()
+    history = s.history()
     assert len(history["latest"]) == 1  # replace semantics
     assert history["latest"][-1].data == "v3"
     assert len(history["normal"]) == 2  # full history
@@ -671,34 +670,23 @@ def test_virtual_validation():
         s.virtual = {}
 
 
-# --- View base class ----------------------------------------------------------------
+# --- contextual views ---------------------------------------------------------------
 
 
 def test_within_is_a_view():
     store = make_store()
     s = store.storage("ns", "test")
-    assert isinstance(within(s), View)
+    assert isinstance(s.within(), View)
 
 
 def test_view_get_only_uses_field_lookup():
-    class DescriptorView(View):
-        __slots__ = ()
-
-        @property
-        def label(self):
-            return "descriptor"
-
-        def __getattr__(self, name):
-            if name == "field":
-                return "stored field"
-            return super().__getattr__(name)
-
     store = make_store()
-    view = DescriptorView(store.storage("ns", "test"))
+    s = store.storage("ns", "test")
+    store.insert(("ns", "test"), "ns/test", "along", "stored field", "test setup")
+    view = s.within()
 
-    assert view.label == "descriptor"
-    assert view.get("label", "default") == "default"
-    assert view.get("field") == "stored field"
+    assert callable(view.along)
+    assert view.get("along") == "stored field"
     assert view.get("missing", "default") == "default"
 
 
@@ -708,9 +696,9 @@ def test_within_get_bypasses_descriptors_methods_and_internal_attributes():
 
     with s:
         s.round = 1
-        s.along = "field-named-along"
+    store.insert(("ns", "test"), "ns/test", "along", "field-named-along", "test setup")
 
-    view = within(s, round=1)
+    view = s.within(round=1)
 
     assert callable(view.along)
     assert view.get("along") == "field-named-along"
@@ -764,7 +752,7 @@ def test_view_rejects_setattr():
         s.round = 1
         s.score = 10
 
-    view = within(s, round=1)
+    view = s.within(round=1)
     with pytest.raises(AttributeError, match="read-only"):
         view.score = 99
 
@@ -777,7 +765,7 @@ def test_view_rejects_delattr():
         s.round = 1
         s.score = 10
 
-    view = within(s, round=1)
+    view = s.within(round=1)
     with pytest.raises(AttributeError, match="read-only"):
         del view.score
 
@@ -795,8 +783,8 @@ def test_within_contextual_query():
         s.round = 2
         s.score = 20
 
-    assert within(s, round=1).score == 10
-    assert within(s, round=2).score == 20
+    assert s.within(round=1).score == 10
+    assert s.within(round=2).score == 20
 
 
 def test_within_get_default():
@@ -804,7 +792,7 @@ def test_within_get_default():
     s = store.storage("ns", "test")
     s.round = 1
 
-    assert within(s, round=1).get("nonexistent", "default") == "default"
+    assert s.within(round=1).get("nonexistent", "default") == "default"
 
 
 def test_within_missing_context_field():
@@ -813,7 +801,7 @@ def test_within_missing_context_field():
     s.x = 1
 
     with pytest.raises(AttributeError):
-        _ = within(s, nonexistent=42).x
+        _ = s.within(nonexistent=42).x
 
 
 def test_within_no_matching_state():
@@ -825,7 +813,7 @@ def test_within_no_matching_state():
         s.score = 10
 
     with pytest.raises(AttributeError):
-        _ = within(s, round=999).score
+        _ = s.within(round=999).score
 
 
 def test_within_key_unavailable():
@@ -839,7 +827,7 @@ def test_within_key_unavailable():
         del s.score
 
     with pytest.raises(AttributeError):
-        _ = within(s, round=1).score
+        _ = s.within(round=1).score
 
 
 def test_within_value_set_before_context():
@@ -852,7 +840,7 @@ def test_within_value_set_before_context():
         s.value = 42
         s.ctx = "a"
 
-    assert within(s, ctx="a").value == 42
+    assert s.within(ctx="a").value == 42
 
 
 def test_within_value_persists_across_context_toggles():
@@ -867,10 +855,10 @@ def test_within_value_persists_across_context_toggles():
         s.round = 2
         s.value = -42
 
-    assert within(s, round=1).role == "buyer"
-    assert within(s, round=2).role == "buyer"
-    assert within(s, round=1).value == 17
-    assert within(s, round=2).value == -42
+    assert s.within(round=1).role == "buyer"
+    assert s.within(round=2).role == "buyer"
+    assert s.within(round=1).value == 17
+    assert s.within(round=2).value == -42
 
 
 def test_within_key_deleted_before_context_raises():
@@ -884,7 +872,7 @@ def test_within_key_deleted_before_context_raises():
         s.ctx = "a"
 
     with pytest.raises(AttributeError):
-        _ = within(s, ctx="a").role
+        _ = s.within(ctx="a").role
 
 
 def test_within_reenters_context_picks_up_current_value():
@@ -901,7 +889,7 @@ def test_within_reenters_context_picks_up_current_value():
         s.value = 2  # assigned while ctx="b"
         s.ctx = "a"  # ctx re-enters "a"; value is still 2
 
-    assert within(s, ctx="a").value == 2
+    assert s.within(ctx="a").value == 2
 
 
 def test_within_key_is_context_field():
@@ -913,8 +901,8 @@ def test_within_key_is_context_field():
         s.color = "red"
         s.color = "blue"
 
-    assert within(s, color="red").color == "red"
-    assert within(s, color="blue").color == "blue"
+    assert s.within(color="red").color == "red"
+    assert s.within(color="blue").color == "blue"
 
 
 def test_within_multiple_ctx_never_simultaneously_satisfied():
@@ -930,7 +918,7 @@ def test_within_multiple_ctx_never_simultaneously_satisfied():
 
     # a=1 and b=1 never hold simultaneously.
     with pytest.raises(AttributeError):
-        _ = within(s, a=1, b=1).value
+        _ = s.within(a=1, b=1).value
 
 
 def test_within_value_deleted_and_reset_during_ctx():
@@ -944,7 +932,7 @@ def test_within_value_deleted_and_reset_during_ctx():
         del s.value
         s.value = 2
 
-    assert within(s, ctx="a").value == 2
+    assert s.within(ctx="a").value == 2
 
 
 def test_within_ctx_deleted_and_restored():
@@ -960,7 +948,7 @@ def test_within_ctx_deleted_and_restored():
         s.value = 2  # assigned while ctx is unavailable
         s.ctx = "a"  # ctx restored; value is 2
 
-    assert within(s, ctx="a").value == 2
+    assert s.within(ctx="a").value == 2
 
 
 def test_within_and_along_return_copies():
@@ -972,15 +960,15 @@ def test_within_and_along_return_copies():
         s.round = 1
         s.items = [1, 2]
 
-    within(s, round=1).items.append(99)
-    assert within(s, round=1).items == [1, 2]
+    s.within(round=1).items.append(99)
+    assert s.within(round=1).items == [1, 2]
 
-    for value, _ctx in within.along(s, "items"):
+    for value, _ctx in s.along("items"):
         value.append(99)
-    assert [v for v, _ in within.along(s, "items")] == [[1, 2]]
+    assert [v for v, _ in s.along("items")] == [[1, 2]]
 
 
-# --- within.strict --------------------------------------------------------------
+# --- strict contextual queries -------------------------------------------------
 
 
 def test_within_strict_rejects_value_set_before_context():
@@ -991,9 +979,9 @@ def test_within_strict_rejects_value_set_before_context():
         s.choice = "A"
         s.round = 1
 
-    assert within(s, round=1).choice == "A"
+    assert s.within(round=1).choice == "A"
     with pytest.raises(AttributeError):
-        _ = within.strict(s, round=1).choice
+        _ = s.within(strict=True, round=1).choice
 
 
 def test_within_strict_accepts_value_set_after_context():
@@ -1004,7 +992,7 @@ def test_within_strict_accepts_value_set_after_context():
         s.round = 1
         s.choice = "A"
 
-    assert within.strict(s, round=1).choice == "A"
+    assert s.within(strict=True, round=1).choice == "A"
 
 
 def test_within_strict_across_rounds():
@@ -1016,11 +1004,11 @@ def test_within_strict_across_rounds():
         s.choice = "A"
         s.round = 2
 
-    assert within(s, round=2).choice == "A"
+    assert s.within(round=2).choice == "A"
     with pytest.raises(AttributeError):
-        _ = within.strict(s, round=2).choice
+        _ = s.within(strict=True, round=2).choice
 
-    assert within.strict(s, round=1).choice == "A"
+    assert s.within(strict=True, round=1).choice == "A"
 
 
 def test_within_strict_with_value_in_both_rounds():
@@ -1033,8 +1021,8 @@ def test_within_strict_with_value_in_both_rounds():
         s.round = 2
         s.choice = "B"
 
-    assert within.strict(s, round=1).choice == "A"
-    assert within.strict(s, round=2).choice == "B"
+    assert s.within(strict=True, round=1).choice == "A"
+    assert s.within(strict=True, round=2).choice == "B"
 
 
 def test_within_strict_rejects_value_from_between_context_windows():
@@ -1048,9 +1036,9 @@ def test_within_strict_rejects_value_from_between_context_windows():
         s.value = 2
         s.ctx = "a"
 
-    assert within(s, ctx="a").value == 2
+    assert s.within(ctx="a").value == 2
     with pytest.raises(AttributeError):
-        _ = within.strict(s, ctx="a").value
+        _ = s.within(strict=True, ctx="a").value
 
 
 def test_within_strict_get_returns_default():
@@ -1061,7 +1049,7 @@ def test_within_strict_get_returns_default():
         s.choice = "A"
         s.round = 1
 
-    assert within.strict(s, round=1).get("choice", "default") == "default"
+    assert s.within(strict=True, round=1).get("choice", "default") == "default"
 
 
 def test_within_strict_treatment_carries_but_strict_rejects():
@@ -1076,22 +1064,15 @@ def test_within_strict_treatment_carries_but_strict_rejects():
         s.round = 2
         s.choice = "B"
 
-    assert within(s, round=1).treatment == "high"
-    assert within(s, round=2).treatment == "high"
+    assert s.within(round=1).treatment == "high"
+    assert s.within(round=2).treatment == "high"
     with pytest.raises(AttributeError):
-        _ = within.strict(s, round=1).treatment
+        _ = s.within(strict=True, round=1).treatment
     with pytest.raises(AttributeError):
-        _ = within.strict(s, round=2).treatment
+        _ = s.within(strict=True, round=2).treatment
 
 
-def test_within_strict_entry_point_is_stable_and_named():
-    assert within.strict is within.strict
-    assert repr(within.strict) == "within.strict"
-    assert callable(within.strict)
-    assert callable(within.strict.along)
-
-
-# --- within.along ------------------------------------------------------------------
+# --- along -------------------------------------------------------------------------
 
 
 def test_within_along():
@@ -1104,7 +1085,7 @@ def test_within_along():
         s.round = 2
         s.score = 20
 
-    results = list(within.along(s, "round"))
+    results = list(s.along("round"))
     assert [(v, ctx.score) for v, ctx in results] == [(1, 10), (2, 20)]
 
 
@@ -1120,7 +1101,7 @@ def test_within_along_chained_basic():
         s.round = 2
         s.score = 20
 
-    results = list(within(s, app="some_game").along("round"))
+    results = list(s.within(app="some_game").along("round"))
     assert [(v, ctx.score) for v, ctx in results] == [(1, 10), (2, 20)]
 
     # Nonexistent field still raises through the merged context
@@ -1141,7 +1122,7 @@ def test_within_along_chained_excludes_wrong_context():
         s.round = 2
         s.score = 99
 
-    results = list(within(s, app="some_game").along("round"))
+    results = list(s.within(app="some_game").along("round"))
     assert [(v, ctx.score) for v, ctx in results] == [(1, 10)]
 
 
@@ -1158,7 +1139,7 @@ def test_within_along_chained_context_toggles():
         s.app = "some_game"
         s.round = 3
 
-    assert [v for v, _ in within(s, app="some_game").along("round")] == [1, 3]
+    assert [v for v, _ in s.within(app="some_game").along("round")] == [1, 3]
 
 
 def test_within_along_chained_multiple_context_fields():
@@ -1174,7 +1155,7 @@ def test_within_along_chained_multiple_context_fields():
         s.mode = "ranked"
         s.round = 3
 
-    assert [v for v, _ in within(s, app="some_game", mode="ranked").along("round")] == [
+    assert [v for v, _ in s.within(app="some_game", mode="ranked").along("round")] == [
         1,
         3,
     ]
@@ -1189,9 +1170,9 @@ def test_within_along_chained_empty_results():
         s.round = 1
 
     # context value never existed
-    assert list(within(s, app="nonexistent").along("round")) == []
+    assert list(s.within(app="nonexistent").along("round")) == []
     # along field never existed
-    assert list(within(s, app="some_game").along("nope")) == []
+    assert list(s.within(app="some_game").along("nope")) == []
 
 
 def test_within_along_chained_multiple_values_same_context():
@@ -1205,7 +1186,7 @@ def test_within_along_chained_multiple_values_same_context():
         s.where = "Carlton"
         s.where = "Fremantle"
 
-    results = list(within(s, app="some_game", round=2).along("where"))
+    results = list(s.within(app="some_game", round=2).along("where"))
     assert [v for v, _ in results] == ["South Yarra", "Carlton", "Fremantle"]
 
 
@@ -1220,10 +1201,10 @@ def test_within_along_chained_context_set_after_along_values():
         s.app = "some_game"
         s.round = 3
 
-    assert [v for v, _ in within(s, app="some_game").along("round")] == [3]
+    assert [v for v, _ in s.within(app="some_game").along("round")] == [3]
 
 
-def test_along_strict_class_method():
+def test_along_strict_mode():
     store = make_store()
     s = store.storage("ns", "test")
 
@@ -1233,7 +1214,7 @@ def test_along_strict_class_method():
         s.round = 2
         s.score = 20
 
-    results = list(within.strict.along(s, "round"))
+    results = list(s.along("round", strict=True))
     assert [(v, ctx.score) for v, ctx in results] == [(1, 10), (2, 20)]
 
 
@@ -1246,7 +1227,7 @@ def test_along_strict_rejects_carried_value():
         s.round = 1
         s.round = 2
 
-    results = list(within.strict.along(s, "round"))
+    results = list(s.along("round", strict=True))
     assert len(results) == 2
     with pytest.raises(AttributeError):
         _ = results[0][1].score
@@ -1265,7 +1246,7 @@ def test_along_strict_instance_propagates():
         s.round = 2
         s.score = 20
 
-    results = list(within.strict(s, group="X").along("round"))
+    results = list(s.within(strict=True, group="X").along("round"))
     assert [(v, ctx.score) for v, ctx in results] == [(1, 10), (2, 20)]
     with pytest.raises(AttributeError):
         _ = results[0][1].group
