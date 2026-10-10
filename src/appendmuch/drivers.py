@@ -193,8 +193,8 @@ class Memory(DBDriver):
         rows.append(row)
 
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
-        for row in _iter_msgpack_rows(msgpack_stream):
-            with self.lock:
+        with self.lock:
+            for row in _iter_msgpack_rows(msgpack_stream):
                 self.seq = max(self.seq, row[0])
                 self._add(row)
 
@@ -386,21 +386,22 @@ class SQLDriver(DBDriver):
             last = rows[-1][0]
 
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
-        self.flush()
+        with self.lock:
+            self.flush()
 
-        batch: list[Row] = []
-        upserts: list[Row] = []
+            batch: list[Row] = []
+            upserts: list[Row] = []
 
-        for row in _iter_msgpack_rows(msgpack_stream):
-            self.seq = max(self.seq, row[0])
-            (upserts if self.replace_predicate(row[1], row[2]) else batch).append(row)
+            for row in _iter_msgpack_rows(msgpack_stream):
+                self.seq = max(self.seq, row[0])
+                (upserts if self.replace_predicate(row[1], row[2]) else batch).append(row)
 
-        with self._cursor() as cur:
-            for row in upserts:
-                self._upsert(cur, row)
+            with self._cursor() as cur:
+                for row in upserts:
+                    self._upsert(cur, row)
 
-            if batch:
-                cur.executemany(self._insert_sql(), batch)
+                if batch:
+                    cur.executemany(self._insert_sql(), batch)
 
     def history_all(self) -> Iterator[Row]:
         self.flush()

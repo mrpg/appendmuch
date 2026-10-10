@@ -9,6 +9,7 @@ different names are independent locations.
 
 import io
 import threading
+import time
 
 import pytest
 
@@ -142,6 +143,39 @@ class DriverContract:
         store2 = Store(driver_factory())
         assert [v.data for v in store2.storage("ns", "test").history()["y"]] == list(range(5000))
         store2.close()
+
+    def test_restore_blocks_concurrent_appends(self, driver_factory):
+        # An append during a restore must not take a seq that a row later in
+        # the stream also carries
+        store1 = Store(driver_factory("src"))
+        s = store1.storage("ns", "test")
+        for i in range(100):
+            s.x = i
+        chunks = list(store1.driver.dump())
+        store1.close()
+
+        driver = driver_factory("dst")
+        driver.ensure()
+        started = threading.Event()
+
+        def stream():
+            yield chunks[0]
+            started.set()
+            time.sleep(0.1)  # let the appender run, if it can
+            yield from chunks[1:]
+
+        def appender():
+            started.wait()
+            driver.append("ns", "y", b"", "", 0.0)
+
+        thread = threading.Thread(target=appender)
+        thread.start()
+        driver.restore(stream())
+        thread.join()
+
+        seqs = [row[0] for row in driver.history_all()]
+        assert len(seqs) == len(set(seqs)) == 101
+        driver.close()
 
     def test_replace_predicate(self, driver_factory):
         store = Store(driver_factory(), replace_predicate=lambda ns, field: field == "latest")
