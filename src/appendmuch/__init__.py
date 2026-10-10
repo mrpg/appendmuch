@@ -25,7 +25,7 @@ __all__ = [
     "tuple2dbns",
 ]
 
-__version_info__ = 0, 2, 0
+__version_info__ = 0, 3, 0
 __version__ = ".".join(map(str, __version_info__))
 __author__ = "Max R. P. Grossmann, Holger Gerhardt"
 __email__ = "appendmuch@grossmann.nexus"
