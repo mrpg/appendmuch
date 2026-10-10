@@ -8,6 +8,7 @@ different names are independent locations.
 """
 
 import io
+import threading
 
 import pytest
 
@@ -88,6 +89,58 @@ class DriverContract:
         s2 = store2.storage("ns", "test")
         assert s2.x == 42
         assert s2.y == "hello"
+        store2.close()
+
+    def test_dump_restore_many_rows(self, driver_factory):
+        store1 = Store(driver_factory("src"), replace_predicate=lambda ns, field: field == "latest")
+        s = store1.storage("ns", "test")
+        for i in range(2500):  # spans several dump batches
+            s.x = i
+            s.latest = i
+        chunks = list(store1.driver.dump())
+        store1.close()
+
+        assert len(chunks) == 2501
+
+        store2 = Store(driver_factory("dst"))
+        store2.driver.restore(io.BytesIO(b"".join(chunks)))
+        store2.load()
+        history = store2.storage("ns", "test").history()
+        assert [v.data for v in history["x"]] == list(range(2500))
+        assert [v.data for v in history["latest"]] == [2499]
+        store2.close()
+
+    def test_dump_on_other_threads_while_writing(self, driver_factory):
+        # As in a web server streaming a dump: writes happen on one thread, while
+        # dumps are consumed on others and may be abandoned midway
+        store = Store(driver_factory())
+        s = store.storage("ns", "test")
+        for i in range(2000):
+            s.x = i
+
+        errors = []
+
+        def consume(stop_after):
+            try:
+                for i, _ in enumerate(store.driver.dump()):
+                    if i == stop_after:
+                        break
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=consume, args=(n,)) for n in (100, None, 1500, None)]
+        for thread in threads:
+            thread.start()
+        for i in range(5000):
+            s.y = i
+        for thread in threads:
+            thread.join()
+        store.close()
+
+        assert errors == []
+
+        store2 = Store(driver_factory())
+        assert [v.data for v in store2.storage("ns", "test").history()["y"]] == list(range(5000))
         store2.close()
 
     def test_replace_predicate(self, driver_factory):

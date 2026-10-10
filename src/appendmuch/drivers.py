@@ -10,6 +10,7 @@ data uses parameterized queries (%s or ?) to prevent SQL injection.
 """
 
 import sqlite3
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
@@ -66,6 +67,10 @@ def _pack_row(
 
 class DBDriver(ABC):
     def __init__(self) -> None:
+        # Serializes writes with flushes and dump reads, so that a dump may be
+        # consumed on another thread than the one writing (e.g., streamed by a
+        # web server). It is never held while a dump yields.
+        self.lock = threading.RLock()
         self.seq: int = 0
         self.codec: Codec = Codec()
         self.replace_predicate: Callable[[str, str], bool] = lambda ns, f: False
@@ -160,10 +165,11 @@ class Memory(DBDriver):
 
     def dump(self) -> Iterator[bytes]:
         rows: list[tuple[int, str, str, bytes | None, float, str]] = []
-        for namespace, fields in self.log.items():
-            for field, values in fields.items():
-                for seq, created_at, _unavailable, value, context in values:
-                    rows.append((seq, namespace, field, value, created_at, context))
+        with self.lock:
+            for namespace, fields in self.log.items():
+                for field, values in fields.items():
+                    for seq, created_at, _unavailable, value, context in values:
+                        rows.append((seq, namespace, field, value, created_at, context))
 
         rows.sort(key=lambda row: row[0])
 
@@ -171,7 +177,8 @@ class Memory(DBDriver):
             yield _pack_row(seq, namespace, field, value, created_at, context)
 
     def reset(self) -> None:
-        self.log.clear()
+        with self.lock:
+            self.log.clear()
 
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
         for row_dict in _iter_msgpack_rows(msgpack_stream):
@@ -195,14 +202,15 @@ class Memory(DBDriver):
                 self.log[namespace][field] = values[-1:]
 
     def _append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
-        seq = self.next_seq()
-        values = self.log.setdefault(namespace, {}).setdefault(field, [])
-        values.append((seq, now, value is None, value, context))
+        with self.lock:
+            seq = self.next_seq()
+            values = self.log.setdefault(namespace, {}).setdefault(field, [])
+            values.append((seq, now, value is None, value, context))
 
-        if self.replace_predicate(namespace, field):
-            self.log[namespace][field] = values[-1:]
+            if self.replace_predicate(namespace, field):
+                self.log[namespace][field] = values[-1:]
 
-        return seq
+            return seq
 
     def insert(self, namespace: str, field: str, data: Any, context: str, now: float) -> int:
         return self._append(namespace, field, self.codec.encode(data), context, now)
@@ -276,6 +284,7 @@ class SQLDriver(DBDriver):
         self.last_batch_time = time.time()
         self.batch_size = 100
         self.batch_timeout = 0.1
+        self.dump_batch_size = 1000
 
     @property
     def table_name(self) -> str:
@@ -309,6 +318,13 @@ class SQLDriver(DBDriver):
             f"FROM {self.table_name} ORDER BY seq ASC"
         )
 
+    def _select_after_sql(self) -> str:
+        p = self._param
+        return (
+            f"SELECT seq, namespace, field, value, created_at, context "  # nosec B608
+            f"FROM {self.table_name} WHERE seq > {p} ORDER BY seq ASC LIMIT {p}"
+        )
+
     def _index_sql(self, field_val: str, ns_pattern: str) -> str:
         # field_val and ns_pattern are validated at construction time
         return (
@@ -332,9 +348,10 @@ class SQLDriver(DBDriver):
         On failure, the pending batch is left intact so callers may retry or
         inspect it.
         """
-        if self.batch_inserts:
-            with self._cursor() as cur:
-                self._process_batch(cur)
+        with self.lock:
+            if self.batch_inserts:
+                with self._cursor() as cur:
+                    self._process_batch(cur)
 
     def _process_batch(self, cur: Any) -> None:
         if not self.batch_inserts:
@@ -357,25 +374,26 @@ class SQLDriver(DBDriver):
         context: str,
         now: float,
     ) -> int:
-        seq = self.next_seq()
+        with self.lock:
+            seq = self.next_seq()
 
-        if self.replace_predicate(namespace, field):
-            with self._cursor() as cur:
-                self._process_batch(cur)
-                cur.execute(self._update_sql(), (seq, encoded, now, context, namespace, field))
-                if cur.rowcount == 0:
-                    cur.execute(
-                        self._insert_sql(),
-                        (seq, namespace, field, encoded, now, context),
-                    )
-        else:
-            self.batch_inserts.append((seq, namespace, field, encoded, now, context))
-
-            if self._should_flush_batch():
+            if self.replace_predicate(namespace, field):
                 with self._cursor() as cur:
                     self._process_batch(cur)
+                    cur.execute(self._update_sql(), (seq, encoded, now, context, namespace, field))
+                    if cur.rowcount == 0:
+                        cur.execute(
+                            self._insert_sql(),
+                            (seq, namespace, field, encoded, now, context),
+                        )
+            else:
+                self.batch_inserts.append((seq, namespace, field, encoded, now, context))
 
-        return seq
+                if self._should_flush_batch():
+                    with self._cursor() as cur:
+                        self._process_batch(cur)
+
+            return seq
 
     def insert(self, namespace: str, field: str, data: Any, context: str, now: float) -> int:
         return self._write(namespace, field, self.codec.encode(data), context, now)
@@ -386,12 +404,28 @@ class SQLDriver(DBDriver):
     # -- bulk I/O --------------------------------------------------------------
 
     def dump(self) -> Iterator[bytes]:
-        self.flush()
+        # Read in batches, each fetched completely under the lock, so that no
+        # cursor, transaction or lock is held while the consumer has control.
+        # Rows written meanwhile get higher seqs and are included. A replaced
+        # row moves to a higher seq and may then appear twice; restore() keeps
+        # the later one.
+        last = -1
 
-        with self._cursor() as cur:
-            cur.execute(self._select_all_sql())
-            for seq, namespace, field, value, created_at, ctx in cur:
+        while True:
+            with self.lock:
+                self.flush()
+
+                with self._cursor() as cur:
+                    cur.execute(self._select_after_sql(), (last, self.dump_batch_size))
+                    rows = cur.fetchall()
+
+            if not rows:
+                return
+
+            for seq, namespace, field, value, created_at, ctx in rows:
                 yield _pack_row(seq, namespace, field, value, created_at, ctx)
+
+            last = rows[-1][0]
 
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
         self.flush()
@@ -450,14 +484,15 @@ class SQLDriver(DBDriver):
                 )
 
     def reset(self) -> None:
-        # pending rows would be destroyed together with the table
-        self.batch_inserts.clear()
+        with self.lock:
+            # pending rows would be destroyed together with the table
+            self.batch_inserts.clear()
 
-        with self._cursor() as cur:
-            cur.execute(self._drop_table_sql())
-            cur.execute(self._create_table_sql())
-            for field_val, ns_pattern in self.replace_index_specs:
-                cur.execute(self._index_sql(field_val, ns_pattern))
+            with self._cursor() as cur:
+                cur.execute(self._drop_table_sql())
+                cur.execute(self._create_table_sql())
+                for field_val, ns_pattern in self.replace_index_specs:
+                    cur.execute(self._index_sql(field_val, ns_pattern))
 
 
 class PostgreSQL(SQLDriver):
