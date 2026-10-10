@@ -36,6 +36,8 @@ class Codec:
         self.exact_encoders: dict[type, tuple[int, Callable[[Any], bytes]]] = {}
         # decoder dispatch by type id
         self.decoders: dict[int, Callable[[bytes], Any]] = {}
+        # round-trip equality checks for types without a meaningful __eq__
+        self.equalities: dict[int, Callable[[Any, Any], bool]] = {}
         # mutability of each registered type
         self.mutability: dict[type, bool] = {}
         self.vigilant = True
@@ -53,6 +55,7 @@ class Codec:
         *,
         mutable: bool = False,
         predicate: Callable[[Any], bool] | None = None,
+        eq: Callable[[Any, Any], bool] | None = None,
     ) -> None:
         """Register a type for encoding/decoding.
 
@@ -63,6 +66,7 @@ class Codec:
             decoder: Function that takes raw bytes and returns a value.
             mutable: Whether this type is mutable (affects context manager guards).
             predicate: Optional content-based predicate for disambiguation (e.g., list subtypes).
+            eq: Optional equality used by the vigilant round-trip check instead of ``==``.
         """
         if not 0 <= type_id <= 255:
             raise ValueError(f"Type ID {type_id} is outside the range 0-255")
@@ -71,6 +75,9 @@ class Codec:
             raise ValueError(f"Type ID {type_id} already registered")
 
         self.decoders[type_id] = decoder
+
+        if eq is not None:
+            self.equalities[type_id] = eq
 
         if predicate is not None:
             # a predicate refines an already registered type, whose mutability prevails
@@ -90,12 +97,9 @@ class Codec:
 
         if self.vigilant and not (self.vigilant_skip is not None and self.vigilant_skip(data)):
             decoded = self.decode(result)
+            eq = self.equalities.get(type_id)
 
-            if decoded != data and not (
-                isinstance(data, random.Random)
-                and isinstance(decoded, random.Random)
-                and data.getstate() == decoded.getstate()
-            ):
+            if not (decoded == data if eq is None else eq(data, decoded)):
                 raise ValueError(f"Value {data!r} failed round-trip encoding.")
 
         return result
@@ -246,4 +250,7 @@ class Codec:
 
             return rng
 
-        self.register(random.Random, 133, encode_random, decode_random, mutable=True)
+        def random_eq(left: random.Random, right: Any) -> bool:
+            return isinstance(right, random.Random) and left.getstate() == right.getstate()
+
+        self.register(random.Random, 133, encode_random, decode_random, mutable=True, eq=random_eq)

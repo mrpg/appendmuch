@@ -225,3 +225,18 @@ def test_predicate_cannot_hijack_type_id(codec):
 def test_type_id_out_of_range_raises(codec, type_id):
     with pytest.raises(ValueError, match="outside the range"):
         codec.register(object, type_id, jd, jl)
+
+
+def test_custom_round_trip_equality(codec):
+    class Opaque:
+        def __init__(self, x):
+            self.x = x
+
+    codec.register(
+        Opaque,
+        202,
+        lambda o: jd(o.x),
+        lambda r: Opaque(jl(r)),
+        eq=lambda left, right: isinstance(right, Opaque) and left.x == right.x,
+    )
+    assert codec.decode(codec.encode(Opaque(1))).x == 1
