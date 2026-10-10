@@ -83,18 +83,10 @@ class VirtualFields(dict[str, Callable[..., Any]]):
     Removal works via ``del player.virtual["name"]``.
     """
 
-    _RESERVED: frozenset[str] | None = None
-
     def __init__(self, initial: dict[str, Callable[..., Any]] | None = None) -> None:
         super().__init__()
         for name, func in (initial or {}).items():
             self[name] = func
-
-    @staticmethod
-    def _reserved() -> frozenset[str]:
-        if VirtualFields._RESERVED is None:
-            VirtualFields._RESERVED = Storage.INTERNAL_ATTRS | Storage.RESERVED_METHODS
-        return VirtualFields._RESERVED
 
     def __setitem__(self, name: str, func: Callable[..., Any]) -> None:
         ensure(
@@ -108,7 +100,7 @@ class VirtualFields(dict[str, Callable[..., Any]]):
             f"Virtual field must be callable, got {type(func).__name__}",
         )
         ensure(
-            name not in self._reserved(),
+            name not in Storage.INTERNAL_ATTRS | Storage.RESERVED_METHODS,
             ValueError,
             f"Cannot use reserved name {name!r} as a virtual field",
         )
