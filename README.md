@@ -28,13 +28,13 @@ store = Store(Memory())  # or Store(Sqlite3("db.sqlite3"))
 # Storage instances provide attribute-based access to namespaced data
 player = store.storage("game", "player1")
 player.score = 100
-player.name = "Alice"
+player.nickname = "Alice"
 
-print(player.score)  # 100
-print(player.name)   # Alice
+print(player.score)     # 100
+print(player.nickname)  # Alice
 ```
 
-Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `along`, `fields`, `flush`, `get`, `history`, `refresh`, `strict`, and `within` are reserved by `Storage` and cannot be used as field names. Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
+Namespaces and fields form a tree: a name cannot be both a field and a sub-namespace, and writes that would create such a collision raise `ValueError`. The names `along`, `fields`, `flush`, `get`, `history`, `name`, `refresh`, `strict`, `virtual`, and `within` are reserved by `Storage` and cannot be used as field names (`name` holds the last component of the namespace). Deleting a field that does not exist (or was already deleted) raises `AttributeError`, mirroring regular Python attribute semantics.
 
 ## Mutable values
 
@@ -112,7 +112,7 @@ Changes are appended to the database, never overwritten, except for fields expli
 ```python
 player.history()["score"]
 # Returns:
-# (Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14'), ...)
+# (Value(time=1771028451.3298147, unavailable=False, data=10, context='__main__.<module>:14', seq=3), ...)
 
 player.fields()  # ['app', 'round', 'score']
 ```
