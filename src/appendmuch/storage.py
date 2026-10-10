@@ -215,7 +215,7 @@ class Store:
 
         for dbns, field, value in self.driver.history_all():
             namespace = dbns2tuple(dbns)
-            hist = self._field_history(namespace, field, create=True)
+            hist = self.field_history(namespace, field, create=True)
             hist.append(value)
 
         _sort_histories(self.cache)
@@ -247,7 +247,7 @@ class Store:
 
         return cast("dict[str, Any]", current)
 
-    def _field_history(
+    def field_history(
         self,
         namespace: tuple[str, ...],
         field: str,
@@ -276,16 +276,8 @@ class Store:
 
         return hist
 
-    def field_history_since(
-        self,
-        namespace: tuple[str, ...],
-        field: str,
-        since: float,
-    ) -> list[Value]:
-        return [v for v in self._field_history(namespace, field) if v.time is not None and v.time > since]
-
     def get_current_value(self, namespace: tuple[str, ...], field: str) -> Any:
-        hist = self._field_history(namespace, field)
+        hist = self.field_history(namespace, field)
 
         if hist:
             latest = hist[-1]
@@ -304,7 +296,7 @@ class Store:
     ) -> None:
         ensure(key.isidentifier(), ValueError, "Key must be a valid identifier")
 
-        hist = self._field_history(namespace, key, create=True)
+        hist = self.field_history(namespace, key, create=True)
         now = time()
         seq = self.driver.insert(dbns, key, value, ctx, now)
 
@@ -334,7 +326,7 @@ class Store:
     ) -> None:
         ensure(key.isidentifier(), ValueError, "Key must be a valid identifier")
 
-        hist = self._field_history(namespace, key)
+        hist = self.field_history(namespace, key)
         if not hist or hist[-1].unavailable:
             raise AttributeError(f"Key not found: ({dbns}, {key})")
 
@@ -351,13 +343,6 @@ class Store:
 
         if self.on_change is not None:
             self.on_change(namespace, key, tombstone)
-
-    def get_field_history(
-        self,
-        namespace: tuple[str, ...],
-        field: str,
-    ) -> list[Value]:
-        return self._field_history(namespace, field)
 
     def list_fields(
         self,
@@ -515,7 +500,7 @@ class View:
         i = 0
         n = len(ctx_changes)
 
-        for value in store.get_field_history(storage.__namespace__, field):
+        for value in store.field_history(storage.__namespace__, field):
             if value.unavailable:
                 continue
 

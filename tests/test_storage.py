@@ -167,7 +167,7 @@ def test_sub_namespaces_are_not_fields():
 
     assert g.fields() == []
     assert not bool(g)  # only a sub-namespace exists, no fields
-    assert store.field_history_since(("game",), "p1", 0.0) == []
+    assert store.field_history(("game",), "p1") == []
 
     g.x = 1
     assert g.fields() == ["x"]
@@ -241,30 +241,12 @@ def test_history_return_is_structurally_immutable():
         history["x"].append(history["x"][0])
 
 
-def test_get_field_history_missing():
+def test_field_history_missing():
     store = make_store()
-    assert store.get_field_history(("ns", "test"), "nonexistent") == []
-
-
-def test_field_history_since():
-    store = make_store()
+    assert store.field_history(("nonexistent",), "x") == []
     s = store.storage("ns", "test")
     s.x = 1
-
-    first_time = s.history()["x"][0].time
-    s.x = 2
-    s.x = 3
-
-    recent = store.field_history_since(("ns", "test"), "x", first_time)
-    assert len(recent) == 2  # second and third writes
-
-
-def test_field_history_since_missing():
-    store = make_store()
-    assert store.field_history_since(("nonexistent",), "x", 0.0) == []
-    s = store.storage("ns", "test")
-    s.x = 1
-    assert store.field_history_since(("ns", "test"), "nonexistent", 0.0) == []
+    assert store.field_history(("ns", "test"), "nonexistent") == []
 
 
 def test_load_sorts_histories():
