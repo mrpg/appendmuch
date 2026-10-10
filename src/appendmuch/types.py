@@ -7,8 +7,8 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class Value:
-    time: float | None = None
-    unavailable: bool = True
-    data: Any = None
-    context: str = ""
-    seq: int = 0
+    time: float
+    unavailable: bool
+    data: Any
+    context: str
+    seq: int
