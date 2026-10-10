@@ -188,19 +188,13 @@ def test_unknown_typeid_raises(codec):
 
 def test_type_id_collision_raises(codec):
     """Registering an already used type ID raises."""
-    codec.register(
-        Decimal,
-        250,
-        lambda d: jd(str(d)),
-        lambda r: Decimal(jl(r)),
-    )
-    with pytest.raises(ValueError, match="Type ID 250 already registered"):
-        codec.register(
-            UUID,
-            250,
-            lambda d: jd(str(d)),
-            lambda r: UUID(jl(r)),
-        )
+    with pytest.raises(ValueError, match="Type ID 8 already registered"):
+        codec.register(UUID, 8, lambda d: jd(str(d)), lambda r: UUID(jl(r)))
+
+
+def test_type_reregistration_raises(codec):
+    with pytest.raises(ValueError, match="Decimal already registered"):
+        codec.register(Decimal, 250, lambda d: jd(str(d)), lambda r: Decimal(jl(r)))
 
 
 def test_isinstance_slow_path(codec):

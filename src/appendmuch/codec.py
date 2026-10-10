@@ -74,6 +74,9 @@ class Codec:
         if type_id in self.decoders:
             raise ValueError(f"Type ID {type_id} already registered")
 
+        if predicate is None and cls in self.exact_encoders:
+            raise ValueError(f"{cls.__name__} already registered; use a predicate to refine it")
+
         self.decoders[type_id] = decoder
 
         if eq is not None:
@@ -86,7 +89,7 @@ class Codec:
         else:
             self.mutability[cls] = mutable
             self.ordered_encoders.append((cls, type_id, encoder))
-            self.exact_encoders.setdefault(cls, (type_id, encoder))
+            self.exact_encoders[cls] = (type_id, encoder)
 
         self._immutable_types_cache = None
 
