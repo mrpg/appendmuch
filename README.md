@@ -107,7 +107,7 @@ for round_val, view in player.along("round", strict=True):
 
 ## Inspecting history
 
-Changes are appended to the database, never overwritten, except for fields explicitly configured with replace semantics. The `history()` method on `Storage` instances returns a read-only mapping of field names to tuples of `Value`s, a small frozen dataclass. `fields()` returns the names of the currently available fields:
+Changes are appended to the database, never overwritten, except that drivers may (but need not) overwrite fields configured with replace semantics. The `history()` method on `Storage` instances returns a read-only mapping of field names to tuples of `Value`s, a small frozen dataclass. `fields()` returns the names of the currently available fields:
 
 ```python
 player.history()["score"]

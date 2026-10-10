@@ -190,6 +190,10 @@ class Store:
 
         for seq, dbns, field, value, created_at, ctx in self.driver.history_all():
             hist = self.field_history(dbns2tuple(dbns), field, create=True)
+
+            if self.replace_predicate(dbns, field):
+                hist.clear()  # drivers need not replace, so this field may have older rows
+
             hist.append(Value(created_at, value is None, None if value is None else decode(value), ctx, seq=seq))
 
     def get_namespace(

@@ -1268,3 +1268,13 @@ def test_codec_through_full_stack():
     # reload from driver
     store.load()
     assert store.storage("ns", "test").tag == Tag("important")
+
+
+def test_load_keeps_only_latest_replaced_value_from_appending_driver():
+    """Drivers may append despite replace semantics; load() still keeps only the latest."""
+    driver = Memory()
+    Store(driver).storage("ns", "test").latest = 1  # no predicate: the driver appends
+    Store(driver).storage("ns", "test").latest = 2
+
+    store = Store(driver, replace_predicate=lambda ns, field: field == "latest")
+    assert [v.data for v in store.storage("ns", "test").history()["latest"]] == [2]

@@ -74,6 +74,9 @@ class DBDriver(ABC):
         # web server). It is never held while a dump yields.
         self.lock = threading.RLock()
         self.seq: int = 0
+        # Fields for which the driver MAY keep only the latest row instead of
+        # appending. This is a permission, not a requirement: a driver that
+        # always appends is correct, too.
         self.replace_predicate: Callable[[str, str], bool] = lambda ns, f: False
 
     def next_seq(self) -> int:
@@ -105,7 +108,11 @@ class DBDriver(ABC):
 
     @abstractmethod
     def append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
-        """Append an encoded value (None for a tombstone) and return its seq."""
+        """Append an encoded value (None for a tombstone) and return its seq.
+
+        If replace_predicate(namespace, field) holds, the driver may instead
+        replace the field's previous row.
+        """
 
     @abstractmethod
     def history_all(self) -> Iterator[Row]:
