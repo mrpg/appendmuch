@@ -542,8 +542,6 @@ class Storage:
             "__accessed_fields__",
             "__contexts__",
             "__field_cache__",
-            "__explicitly_set__",
-            "__assigned_values__",
             "name",
             "virtual",
             "__namespace__",
@@ -583,8 +581,6 @@ class Storage:
         object.__setattr__(self, "__contexts__", 0)
         object.__setattr__(self, "__accessed_fields__", {})
         object.__setattr__(self, "__field_cache__", {})
-        object.__setattr__(self, "__explicitly_set__", set())
-        object.__setattr__(self, "__assigned_values__", {})
         object.__setattr__(self, "virtual", VirtualFields(virtual or {}))
 
     def __hash__(self) -> int:
@@ -647,7 +643,6 @@ class Storage:
         # object.__getattribute__ avoids re-entering our __getattribute__ hook
         getattribute = object.__getattribute__
         store: Store = getattribute(self, "__store__")
-        immutable = store.codec.immutable_types()
 
         store.insert(
             getattribute(self, "__namespace__"),
@@ -658,10 +653,7 @@ class Storage:
         )
 
         getattribute(self, "__field_cache__")[name] = value
-        if getattribute(self, "__contexts__") == 0:
-            getattribute(self, "__accessed_fields__")[name] = safe_deepcopy(value, immutable)
-        getattribute(self, "__explicitly_set__").add(name)
-        getattribute(self, "__assigned_values__")[name] = safe_deepcopy(value, immutable)
+        getattribute(self, "__accessed_fields__")[name] = safe_deepcopy(value, store.codec.immutable_types())
 
     def __guarded_return__(self, name: str, value: Any) -> Any:
         store: Store = object.__getattribute__(self, "__store__")
@@ -728,15 +720,11 @@ class Storage:
         )
         getattribute(self, "__field_cache__").pop(name, None)
         getattribute(self, "__accessed_fields__").pop(name, None)
-        getattribute(self, "__explicitly_set__").discard(name)
-        getattribute(self, "__assigned_values__").pop(name, None)
 
     def __enter__(self) -> Self:
         if self.__contexts__ == 0:
             self.__field_cache__.clear()
             self.__accessed_fields__.clear()
-            self.__explicitly_set__.clear()
-            self.__assigned_values__.clear()
 
         self.__contexts__ += 1
 
@@ -759,77 +747,33 @@ class Storage:
         return False
 
     def flush(self) -> None:
-        try:
-            accessed_fields = object.__getattribute__(self, "__accessed_fields__")
-            field_cache = object.__getattribute__(self, "__field_cache__")
-            explicitly_set = object.__getattribute__(self, "__explicitly_set__")
-            assigned_values = object.__getattribute__(self, "__assigned_values__")
-            store: Store = object.__getattribute__(self, "__store__")
-        except AttributeError:
-            return
+        """Persist in-place mutations of fields read or written in this context.
 
-        namespace = self.__namespace__
-        dbns = self.__dbns__
+        A field is only written if the store still holds the value it was
+        read (or last written) as; otherwise the newer stored value wins.
+        """
+        store: Store = object.__getattribute__(self, "__store__")
+        accessed_fields = object.__getattribute__(self, "__accessed_fields__")
         immutable = store.codec.immutable_types()
-        all_fields = set(accessed_fields.keys()) | set(field_cache.keys())
-        missing = object()
 
-        for field in all_fields:
-            if field in field_cache:
-                current_value = field_cache[field]
-                original_value = accessed_fields.get(field, missing)
+        # copied, as on_change callbacks may write to this Storage
+        for field, current_value in list(object.__getattribute__(self, "__field_cache__").items()):
+            original_value = accessed_fields.get(field, _MISSING)
 
-                if field in explicitly_set:
-                    assigned_value = assigned_values.get(field)
-                    if assigned_value is not None and not values_equal(store.codec, current_value, assigned_value):
-                        try:
-                            latest_value = store.get_current_value(namespace, field)
-                        except AttributeError:
-                            latest_value = missing
+            if original_value is _MISSING or values_equal(store.codec, current_value, original_value):
+                continue
 
-                        if latest_value is not missing and values_equal(store.codec, latest_value, assigned_value):
-                            store.insert(
-                                namespace,
-                                dbns,
-                                field,
-                                current_value,
-                                context(currentframe()),
-                            )
-                            snapshot = safe_deepcopy(current_value, immutable)
-                        elif latest_value is not missing and values_equal(store.codec, latest_value, current_value):
-                            snapshot = safe_deepcopy(current_value, immutable)
-                        elif latest_value is missing:
-                            assigned_values.pop(field, None)
-                            accessed_fields.pop(field, None)
-                            continue
-                        else:
-                            snapshot = safe_deepcopy(latest_value, immutable)
+            try:
+                latest_value = store.get_current_value(self.__namespace__, field)
+            except AttributeError:
+                accessed_fields.pop(field, None)
+                continue
 
-                        assigned_values[field] = snapshot
-                        accessed_fields[field] = snapshot
-                    continue
+            if values_equal(store.codec, latest_value, original_value):
+                store.insert(self.__namespace__, self.__dbns__, field, current_value, context(currentframe()))
+                latest_value = current_value
 
-                if original_value is not missing and not values_equal(store.codec, current_value, original_value):
-                    try:
-                        latest_value = store.get_current_value(namespace, field)
-                    except AttributeError:
-                        latest_value = missing
-
-                    if latest_value is not missing and values_equal(store.codec, latest_value, original_value):
-                        store.insert(
-                            namespace,
-                            dbns,
-                            field,
-                            current_value,
-                            context(currentframe()),
-                        )
-                        accessed_fields[field] = safe_deepcopy(current_value, immutable)
-                    elif latest_value is not missing and values_equal(store.codec, latest_value, current_value):
-                        accessed_fields[field] = safe_deepcopy(current_value, immutable)
-                    elif latest_value is missing:
-                        accessed_fields.pop(field, None)
-                    else:
-                        accessed_fields[field] = safe_deepcopy(latest_value, immutable)
+            accessed_fields[field] = safe_deepcopy(latest_value, immutable)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Storage):
