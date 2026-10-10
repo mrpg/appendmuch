@@ -19,7 +19,7 @@ from typing import Any, Literal, Self, cast
 from appendmuch.codec import Codec
 from appendmuch.drivers import DBDriver
 from appendmuch.types import Value
-from appendmuch.utils import context, ensure, safe_deepcopy, valid_token
+from appendmuch.utils import context, ensure, is_immutable, safe_deepcopy, valid_token
 
 _SEQ_KEY = attrgetter("seq")
 _BY_SEQ = itemgetter(0)
@@ -665,18 +665,9 @@ class Storage:
 
     def __guarded_return__(self, name: str, value: Any) -> Any:
         store: Store = object.__getattribute__(self, "__store__")
-        immutable = store.codec.immutable_types()
-
-        is_immutable = isinstance(value, immutable)
-
-        if is_immutable and isinstance(value, (tuple, frozenset)):
-            try:
-                hash(value)
-            except TypeError:
-                is_immutable = False
 
         ensure(
-            is_immutable or self.__contexts__ > 0,
+            is_immutable(value, store.codec.immutable_types()) or self.__contexts__ > 0,
             TypeError,
             f"This {self!r} must be wrapped in a context manager (use 'with') "
             f"because the field '{name}' is of a mutable type ({type(value).__name__}).",

@@ -29,19 +29,21 @@ def valid_token(x: str) -> bool:
     return all(ch in TOKEN_CHARS for ch in x)
 
 
+def is_immutable(value: Any, immutable_types: tuple[type, ...]) -> bool:
+    if not isinstance(value, immutable_types):
+        return False
+
+    if isinstance(value, (tuple, frozenset)):
+        try:
+            hash(value)  # rules out containers with mutable members
+        except TypeError:
+            return False
+
+    return True
+
+
 def safe_deepcopy(value: Any, immutable_types: tuple[type, ...]) -> Any:
-    if isinstance(value, immutable_types):
-        if isinstance(value, (tuple, frozenset)):
-            try:
-                hash(value)
-
-                return value
-            except TypeError:
-                return copy.deepcopy(value)
-
-        return value
-
-    return copy.deepcopy(value)
+    return value if is_immutable(value, immutable_types) else copy.deepcopy(value)
 
 
 def context(frame: FrameType | None) -> str:
