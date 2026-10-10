@@ -29,21 +29,18 @@ def jd(data: Any) -> bytes:
 class Codec:
     def __init__(self) -> None:
         # ordered list for isinstance dispatch (order matters: bool before int, etc.)
-        self.ordered_encoders: list[tuple[type, int, Callable[[Any], bytes], Callable[[Any], bool] | None]] = []
-        # predicate-based entries only (checked first; empty for the built-in codec)
+        self.ordered_encoders: list[tuple[type, int, Callable[[Any], bytes]]] = []
+        # predicate-based entries (checked first; empty for the built-in codec)
         self.predicated_encoders: list[tuple[type, int, Callable[[Any], bytes], Callable[[Any], bool]]] = []
         # fast path for exact type match
         self.exact_encoders: dict[type, tuple[int, Callable[[Any], bytes]]] = {}
         # decoder dispatch by type id
         self.decoders: dict[int, Callable[[bytes], Any]] = {}
-        # type metadata
-        self.type_to_id: dict[type, int] = {}
-        self.id_to_type: dict[int, type] = {}
-        self.mutable_ids: set[int] = set()
+        # mutability of each registered type
+        self.mutability: dict[type, bool] = {}
         self.vigilant = True
         self.vigilant_skip: Callable[[Any], bool] | None = None
         self._immutable_types_cache: tuple[type, ...] | None = None
-        self._mutable_types_cache: tuple[type, ...] | None = None
 
         self.register_builtins()
 
@@ -67,28 +64,24 @@ class Codec:
             mutable: Whether this type is mutable (affects context manager guards).
             predicate: Optional content-based predicate for disambiguation (e.g., list subtypes).
         """
-        if type_id in self.id_to_type and self.id_to_type[type_id] is not cls:
-            existing = self.id_to_type[type_id]
-            if predicate is None:
-                raise ValueError(f"Type ID {type_id} already registered for {existing.__name__}")
+        if not 0 <= type_id <= 255:
+            raise ValueError(f"Type ID {type_id} is outside the range 0-255")
 
-        self.type_to_id[cls] = type_id
-        self.id_to_type[type_id] = cls
+        if type_id in self.decoders:
+            raise ValueError(f"Type ID {type_id} already registered")
+
         self.decoders[type_id] = decoder
 
-        if mutable:
-            self.mutable_ids.add(type_id)
+        if predicate is not None:
+            # a predicate refines an already registered type, whose mutability prevails
+            self.mutability.setdefault(cls, mutable)
+            self.predicated_encoders.append((cls, type_id, encoder, predicate))
+        else:
+            self.mutability[cls] = mutable
+            self.ordered_encoders.append((cls, type_id, encoder))
+            self.exact_encoders.setdefault(cls, (type_id, encoder))
 
         self._immutable_types_cache = None
-        self._mutable_types_cache = None
-
-        self.ordered_encoders.append((cls, type_id, encoder, predicate))
-
-        if predicate is not None:
-            self.predicated_encoders.append((cls, type_id, encoder, predicate))
-        # only add to exact fast-path if no predicate (predicate entries need ordered check)
-        elif cls not in self.exact_encoders:
-            self.exact_encoders[cls] = (type_id, encoder)
 
     def encode(self, data: Any) -> bytes:
         """Encode a value to bytes with type ID prefix."""
@@ -111,10 +104,9 @@ class Codec:
         """Encode a value, returning (type_id, raw_bytes) separately."""
         # predicate-based entries override everything else
         # (e.g. list[PlayerIdentifier] vs plain list); empty unless registered
-        if self.predicated_encoders:
-            for cls, tid, enc, pred in self.predicated_encoders:
-                if isinstance(data, cls) and pred(data):
-                    return tid, enc(data)
+        for cls, type_id, encoder, predicate in self.predicated_encoders:
+            if isinstance(data, cls) and predicate(data):
+                return type_id, encoder(data)
 
         # fast path: exact type match (handles most common cases)
         exact = self.exact_encoders.get(type(data))
@@ -122,39 +114,25 @@ class Codec:
             return exact[0], exact[1](data)
 
         # slow path: ordered isinstance chain (subclasses of registered types)
-        for cls, type_id, encoder, predicate in self.ordered_encoders:
-            if predicate is None and isinstance(data, cls):
+        for cls, type_id, encoder in self.ordered_encoders:
+            if isinstance(data, cls):
                 return type_id, encoder(data)
 
         raise NotImplementedError(f"{data} has invalid type: {type(data)}")
 
     def decode(self, allbytes: bytes) -> Any:
         """Decode bytes (with type ID prefix) back to a value."""
-        type_id = allbytes[0]
-        raw = allbytes[1:]
-
-        decoder = self.decoders.get(type_id)
+        decoder = self.decoders.get(allbytes[0])
         if decoder is None:
-            raise NotImplementedError(f"Invalid typeid: {type_id}")
+            raise NotImplementedError(f"Invalid typeid: {allbytes[0]}")
 
-        return decoder(raw)
+        return decoder(allbytes[1:])
 
     def immutable_types(self) -> tuple[type, ...]:
         if self._immutable_types_cache is None:
-            self._immutable_types_cache = tuple(
-                cls for cls, tid in self.type_to_id.items() if tid not in self.mutable_ids
-            )
+            self._immutable_types_cache = tuple(cls for cls, mutable in self.mutability.items() if not mutable)
 
         return self._immutable_types_cache
-
-    def mutable_types(self) -> tuple[type, ...]:
-        if self._mutable_types_cache is None:
-            self._mutable_types_cache = tuple(cls for cls, tid in self.type_to_id.items() if tid in self.mutable_ids)
-
-        return self._mutable_types_cache
-
-    def type_map(self) -> dict[type, int]:
-        return dict(self.type_to_id)
 
     def register_builtins(self) -> None:
         """Register all built-in Python types. Order matters for isinstance dispatch."""

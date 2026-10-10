@@ -91,11 +91,14 @@ def test_random_roundtrip(codec):
 
 
 def test_type_classification(codec):
-    immutable = codec.immutable_types()
-    mutable = codec.mutable_types()
-    assert {int, str, bool, date, time, datetime} <= set(immutable)
-    assert {list, dict, set, random.Random} <= set(mutable)
-    assert not set(immutable) & set(mutable)
+    immutable = set(codec.immutable_types())
+    assert {int, str, bool, date, time, datetime} <= immutable
+    assert not {list, dict, set, random.Random} & immutable
+
+
+def test_predicate_registration_keeps_base_mutability(codec):
+    codec.register(list, 201, jd, jl, predicate=lambda d: False)
+    assert list not in codec.immutable_types()
 
 
 def test_custom_type_registration(codec):
@@ -184,7 +187,7 @@ def test_unknown_typeid_raises(codec):
 
 
 def test_type_id_collision_raises(codec):
-    """Registering same type ID for a different type without predicate raises."""
+    """Registering an already used type ID raises."""
     codec.register(
         Decimal,
         250,
@@ -211,9 +214,14 @@ def test_isinstance_slow_path(codec):
     assert codec.decode(encoded) == 42
 
 
-def test_type_map(codec):
-    tm = codec.type_map()
-    assert isinstance(tm, dict)
-    assert tm[int] == 0
-    assert tm[bool] == 5
-    assert tm[str] == 2
+def test_predicate_cannot_hijack_type_id(codec):
+    with pytest.raises(ValueError, match="Type ID 3 already registered"):
+        codec.register(list, 3, jd, jl, predicate=lambda d: False)
+
+    assert codec.decode(codec.encode((1, 2))) == (1, 2)
+
+
+@pytest.mark.parametrize("type_id", [-1, 256])
+def test_type_id_out_of_range_raises(codec, type_id):
+    with pytest.raises(ValueError, match="outside the range"):
+        codec.register(object, type_id, jd, jl)
