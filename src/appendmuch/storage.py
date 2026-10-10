@@ -7,11 +7,10 @@ and View (contextual queries).
 """
 
 import weakref
-from bisect import insort
 from collections.abc import Callable, Iterator
 from contextlib import suppress
 from inspect import currentframe
-from operator import attrgetter, itemgetter
+from operator import itemgetter
 from time import time
 from types import MappingProxyType
 from typing import Any, Literal, Self, cast
@@ -21,7 +20,6 @@ from appendmuch.drivers import DBDriver
 from appendmuch.types import Value
 from appendmuch.utils import context, ensure, is_immutable, safe_deepcopy, valid_token
 
-_SEQ_KEY = attrgetter("seq")
 _BY_SEQ = itemgetter(0)
 _MISSING: Any = object()
 
@@ -60,21 +58,6 @@ def values_equal(codec: Codec, left: Any, right: Any) -> bool:
         return codec.encode_raw(left) == codec.encode_raw(right)
     except Exception:
         return bool(left == right)
-
-
-def _append_by_seq(hist: list[Value], value: Value) -> None:
-    if hist and hist[-1].seq >= value.seq:
-        insort(hist, value, key=_SEQ_KEY)
-    else:
-        hist.append(value)
-
-
-def _sort_histories(node: dict[str, Any]) -> None:
-    for child in node.values():
-        if isinstance(child, list):
-            child.sort(key=_SEQ_KEY)
-        else:
-            _sort_histories(child)
 
 
 class VirtualFields(dict[str, Callable[..., Any]]):
@@ -217,8 +200,6 @@ class Store:
             hist = self.field_history(dbns2tuple(dbns), field, create=True)
             hist.append(Value(created_at, value is None, None if value is None else decode(value), ctx, seq=seq))
 
-        _sort_histories(self.cache)
-
     def get_namespace(
         self,
         namespace: tuple[str, ...],
@@ -309,9 +290,8 @@ class Store:
 
         if self.replace_predicate(dbns, key):
             hist.clear()
-            hist.append(new_value)
-        else:
-            _append_by_seq(hist, new_value)
+
+        hist.append(new_value)
 
         if self.on_change is not None:
             self.on_change(namespace, key, new_value)
@@ -336,9 +316,8 @@ class Store:
 
         if self.replace_predicate(dbns, key):
             hist.clear()
-            hist.append(tombstone)
-        else:
-            _append_by_seq(hist, tombstone)
+
+        hist.append(tombstone)
 
         if self.on_change is not None:
             self.on_change(namespace, key, tombstone)
