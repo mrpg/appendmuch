@@ -507,11 +507,7 @@ class PostgreSQL(SQLDriver):
 
 
 class Sqlite3(SQLDriver):
-    """SQLite3 implementation with WAL mode and batched writes.
-
-    When using ``check_same_thread=False``, the caller is responsible for
-    serializing concurrent access to the driver.
-    """
+    """SQLite3 implementation with WAL mode and batched writes."""
 
     _param = "?"
 
