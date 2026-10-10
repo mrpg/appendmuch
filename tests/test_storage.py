@@ -388,6 +388,35 @@ def test_explicit_set_then_mutate_flushes():
     assert extra_changes[0][1] == [1, 2, 3]
 
 
+@pytest.mark.parametrize(
+    ("update", "expected"),
+    [
+        (lambda s: setattr(s, "b", [99]), [[], [99]]),
+        (lambda s: delattr(s, "b"), [[], None]),
+        (lambda s: s.refresh("b"), [[]]),
+    ],
+    ids=["replace", "delete", "refresh"],
+)
+def test_flush_respects_callback_changes_to_pending_field(update, expected):
+    store = make_store()
+    s = store.storage("ns", "test")
+    s.a = []
+    s.b = []
+
+    def on_change(ns, field, value):
+        if field == "a":
+            update(s)
+
+    store.on_change = on_change
+
+    with s:
+        s.a.append(1)
+        s.b.append(2)
+
+    assert [entry.data for entry in s.history()["a"]] == [[], [1]]
+    assert [entry.data for entry in s.history()["b"]] == expected
+
+
 def test_flush_skips_stale_mutation_after_external_write():
     """A context must not write back a stale cached value over a newer external write."""
     store = make_store()

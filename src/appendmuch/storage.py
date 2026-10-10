@@ -713,10 +713,16 @@ class Storage:
         """
         store: Store = object.__getattribute__(self, "__store__")
         accessed_fields = object.__getattribute__(self, "__accessed_fields__")
+        field_cache = object.__getattribute__(self, "__field_cache__")
         immutable = store.codec.immutable_types()
 
-        # copied, as on_change callbacks may write to this Storage
-        for field, current_value in list(object.__getattribute__(self, "__field_cache__").items()):
+        # Snapshot names only: callbacks may replace or remove pending values.
+        for field in list(field_cache):
+            try:
+                current_value = field_cache[field]
+            except KeyError:
+                continue
+
             original_value = accessed_fields.get(field, _MISSING)
 
             if original_value is _MISSING or values_equal(store.codec, current_value, original_value):
