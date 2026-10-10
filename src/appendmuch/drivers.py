@@ -15,23 +15,22 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from operator import itemgetter
 from typing import Any, Protocol, cast
 
 import msgpack
 
-from appendmuch.codec import Codec
-from appendmuch.types import Value
 from appendmuch.utils import SAFE_LIKE_PATTERN, ensure
+
+# (seq, namespace, field, value, created_at, context); value None marks a tombstone
+Row = tuple[int, str, str, bytes | None, float, str]
 
 
 class ReadableBytes(Protocol):
     def read(self, size: int = -1) -> bytes: ...
 
 
-def _iter_msgpack_rows(
-    msgpack_stream: Iterable[bytes] | ReadableBytes,
-) -> Iterator[dict[str, Any]]:
-    """Accept either a file-like object or an iterable of msgpack chunks."""
+def _iter_msgpack_dicts(msgpack_stream: Iterable[bytes] | ReadableBytes) -> Iterator[dict[str, Any]]:
     if hasattr(msgpack_stream, "read"):
         yield from msgpack.Unpacker(cast("ReadableBytes", msgpack_stream), raw=False)
         return
@@ -42,14 +41,15 @@ def _iter_msgpack_rows(
         yield from unpacker
 
 
-def _pack_row(
-    seq: int,
-    namespace: str,
-    field: str,
-    value: bytes | None,
-    created_at: float,
-    context: str,
-) -> bytes:
+def _iter_msgpack_rows(msgpack_stream: Iterable[bytes] | ReadableBytes) -> Iterator[Row]:
+    """Accept either a file-like object or an iterable of msgpack chunks."""
+    for row in _iter_msgpack_dicts(msgpack_stream):
+        yield row["seq"], row["namespace"], row["field"], row["value"], row["created_at"], row["context"]
+
+
+def _pack_row(row: Row) -> bytes:
+    seq, namespace, field, value, created_at, context = row
+
     return cast(
         "bytes",
         msgpack.packb(
@@ -66,13 +66,14 @@ def _pack_row(
 
 
 class DBDriver(ABC):
+    """Stores encoded rows; encoding and decoding values is up to the caller."""
+
     def __init__(self) -> None:
         # Serializes writes with flushes and dump reads, so that a dump may be
         # consumed on another thread than the one writing (e.g., streamed by a
         # web server). It is never held while a dump yields.
         self.lock = threading.RLock()
         self.seq: int = 0
-        self.codec: Codec = Codec()
         self.replace_predicate: Callable[[str, str], bool] = lambda ns, f: False
 
     def next_seq(self) -> int:
@@ -103,20 +104,17 @@ class DBDriver(ABC):
         """Raise if the existing tables are unusable (e.g. incompatible schema)."""
 
     @abstractmethod
-    def insert(self, namespace: str, field: str, data: Any, context: str, now: float) -> int: ...
+    def append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
+        """Append an encoded value (None for a tombstone) and return its seq."""
 
     @abstractmethod
-    def delete(self, namespace: str, field: str, context: str, now: float) -> int: ...
-
-    @abstractmethod
-    def history_all(self) -> Iterator[tuple[str, str, Value]]: ...
+    def history_all(self) -> Iterator[Row]:
+        """Yield all rows in seq order."""
 
     @abstractmethod
     def close(self) -> None: ...
 
-    def flush(
-        self,
-    ) -> None:
+    def flush(self) -> None:
         """Write any buffered rows to durable storage. No-op by default."""
         return None
 
@@ -146,7 +144,7 @@ class Memory(DBDriver):
 
     def __init__(self) -> None:
         super().__init__()
-        self.log: dict[str, dict[str, list[tuple[int, float, bool, bytes | None, str]]]] = {}
+        self.log: dict[tuple[str, str], list[Row]] = {}
 
     def close(self) -> None:
         pass
@@ -163,79 +161,42 @@ class Memory(DBDriver):
     def size(self) -> int | None:
         return None
 
-    def dump(self) -> Iterator[bytes]:
-        rows: list[tuple[int, str, str, bytes | None, float, str]] = []
+    def history_all(self) -> Iterator[Row]:
         with self.lock:
-            for namespace, fields in self.log.items():
-                for field, values in fields.items():
-                    for seq, created_at, _unavailable, value, context in values:
-                        rows.append((seq, namespace, field, value, created_at, context))
+            rows = [row for rows in self.log.values() for row in rows]
 
-        rows.sort(key=lambda row: row[0])
+        rows.sort(key=itemgetter(0))
+        yield from rows
 
-        for seq, namespace, field, value, created_at, context in rows:
-            yield _pack_row(seq, namespace, field, value, created_at, context)
+    def dump(self) -> Iterator[bytes]:
+        for row in self.history_all():
+            yield _pack_row(row)
 
     def reset(self) -> None:
         with self.lock:
             self.log.clear()
 
+    def _add(self, row: Row) -> None:
+        _seq, namespace, field, *_ = row
+        rows = self.log.setdefault((namespace, field), [])
+
+        if self.replace_predicate(namespace, field):
+            rows.clear()
+
+        rows.append(row)
+
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
-        for row_dict in _iter_msgpack_rows(msgpack_stream):
-            namespace, field = row_dict["namespace"], row_dict["field"]
-            raw_value = row_dict["value"]
-            seq = cast("int", row_dict["seq"])
-            self.seq = max(self.seq, seq)
+        for row in _iter_msgpack_rows(msgpack_stream):
+            with self.lock:
+                self.seq = max(self.seq, row[0])
+                self._add(row)
 
-            values = self.log.setdefault(namespace, {}).setdefault(field, [])
-            values.append(
-                (
-                    seq,
-                    row_dict["created_at"],
-                    raw_value is None,
-                    raw_value,
-                    row_dict["context"],
-                )
-            )
-
-            if self.replace_predicate(namespace, field):
-                self.log[namespace][field] = values[-1:]
-
-    def _append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
+    def append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
         with self.lock:
             seq = self.next_seq()
-            values = self.log.setdefault(namespace, {}).setdefault(field, [])
-            values.append((seq, now, value is None, value, context))
-
-            if self.replace_predicate(namespace, field):
-                self.log[namespace][field] = values[-1:]
+            self._add((seq, namespace, field, value, now, context))
 
             return seq
-
-    def insert(self, namespace: str, field: str, data: Any, context: str, now: float) -> int:
-        return self._append(namespace, field, self.codec.encode(data), context, now)
-
-    def delete(self, namespace: str, field: str, context: str, now: float) -> int:
-        if namespace not in self.log or field not in self.log[namespace]:
-            raise AttributeError(f"Key not found: ({namespace}, {field})")
-
-        return self._append(namespace, field, None, context, now)
-
-    def history_all(self) -> Iterator[tuple[str, str, Value]]:
-        for namespace, fields in self.log.items():
-            for field, values in fields.items():
-                for seq, created_at, unavailable, value, context in values:
-                    yield (
-                        namespace,
-                        field,
-                        Value(
-                            created_at,
-                            unavailable,
-                            self.codec.decode(value) if value is not None else None,
-                            context,
-                            seq=seq,
-                        ),
-                    )
 
 
 class SQLDriver(DBDriver):
@@ -280,7 +241,7 @@ class SQLDriver(DBDriver):
         self.table_prefix = table_prefix
         self.tblextra = tblextra
         self.replace_index_specs = replace_index_specs or []
-        self.batch_inserts: list[tuple[Any, ...]] = []
+        self.batch_inserts: list[Row] = []
         self.last_batch_time = time.time()
         self.batch_size = 100
         self.batch_timeout = 0.1
@@ -366,28 +327,17 @@ class SQLDriver(DBDriver):
 
     # -- writes ---------------------------------------------------------------
 
-    def _write(
-        self,
-        namespace: str,
-        field: str,
-        encoded: bytes | None,
-        context: str,
-        now: float,
-    ) -> int:
+    def append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
         with self.lock:
             seq = self.next_seq()
+            row = (seq, namespace, field, value, now, context)
 
             if self.replace_predicate(namespace, field):
                 with self._cursor() as cur:
                     self._process_batch(cur)
-                    cur.execute(self._update_sql(), (seq, encoded, now, context, namespace, field))
-                    if cur.rowcount == 0:
-                        cur.execute(
-                            self._insert_sql(),
-                            (seq, namespace, field, encoded, now, context),
-                        )
+                    self._upsert(cur, row)
             else:
-                self.batch_inserts.append((seq, namespace, field, encoded, now, context))
+                self.batch_inserts.append(row)
 
                 if self._should_flush_batch():
                     with self._cursor() as cur:
@@ -395,11 +345,12 @@ class SQLDriver(DBDriver):
 
             return seq
 
-    def insert(self, namespace: str, field: str, data: Any, context: str, now: float) -> int:
-        return self._write(namespace, field, self.codec.encode(data), context, now)
+    def _upsert(self, cur: Any, row: Row) -> None:
+        seq, namespace, field, value, created_at, context = row
+        cur.execute(self._update_sql(), (seq, value, created_at, context, namespace, field))
 
-    def delete(self, namespace: str, field: str, context: str, now: float) -> int:
-        return self._write(namespace, field, None, context, now)
+        if cur.rowcount == 0:
+            cur.execute(self._insert_sql(), row)
 
     # -- bulk I/O --------------------------------------------------------------
 
@@ -422,66 +373,36 @@ class SQLDriver(DBDriver):
             if not rows:
                 return
 
-            for seq, namespace, field, value, created_at, ctx in rows:
-                yield _pack_row(seq, namespace, field, value, created_at, ctx)
+            for row in rows:
+                yield _pack_row(row)
 
             last = rows[-1][0]
 
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
         self.flush()
 
-        batch = []
-        upserts = []
+        batch: list[Row] = []
+        upserts: list[Row] = []
 
-        for row_dict in _iter_msgpack_rows(msgpack_stream):
-            namespace = row_dict["namespace"]
-            field = row_dict["field"]
-            seq = cast("int", row_dict["seq"])
-            self.seq = max(self.seq, seq)
-            row = (
-                seq,
-                namespace,
-                field,
-                row_dict["value"],
-                row_dict["created_at"],
-                row_dict["context"],
-            )
-
-            if self.replace_predicate(namespace, field):
-                upserts.append(row)
-            else:
-                batch.append(row)
+        for row in _iter_msgpack_rows(msgpack_stream):
+            self.seq = max(self.seq, row[0])
+            (upserts if self.replace_predicate(row[1], row[2]) else batch).append(row)
 
         with self._cursor() as cur:
-            for seq, namespace, field, value, created_at, ctx in upserts:
-                cur.execute(self._update_sql(), (seq, value, created_at, ctx, namespace, field))
-                if cur.rowcount == 0:
-                    cur.execute(
-                        self._insert_sql(),
-                        (seq, namespace, field, value, created_at, ctx),
-                    )
+            for row in upserts:
+                self._upsert(cur, row)
 
             if batch:
                 cur.executemany(self._insert_sql(), batch)
 
-    def history_all(self) -> Iterator[tuple[str, str, Value]]:
+    def history_all(self) -> Iterator[Row]:
         self.flush()
 
         with self._cursor() as cur:
             cur.execute(self._select_all_sql())
-            for seq, namespace, field, value, created_at, ctx in cur:
-                self.seq = max(self.seq, seq)
-                yield (
-                    namespace,
-                    field,
-                    Value(
-                        created_at,
-                        value is None,
-                        self.codec.decode(value) if value is not None else None,
-                        ctx,
-                        seq=seq,
-                    ),
-                )
+            for row in cur:
+                self.seq = max(self.seq, row[0])
+                yield row
 
     def reset(self) -> None:
         with self.lock:

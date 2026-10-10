@@ -167,9 +167,7 @@ class Store:
         self.namespace_validator = namespace_validator
         self.cache: dict[str, Any] = {}
 
-        # wire codec and replace_predicate into driver
         self.driver = driver
-        self.driver.codec = self.codec
         self.driver.replace_predicate = self.replace_predicate
 
         self.driver.ensure()
@@ -213,10 +211,11 @@ class Store:
         """Load the entire database history into memory."""
         self.cache.clear()
 
-        for dbns, field, value in self.driver.history_all():
-            namespace = dbns2tuple(dbns)
-            hist = self.field_history(namespace, field, create=True)
-            hist.append(value)
+        decode = self.codec.decode
+
+        for seq, dbns, field, value, created_at, ctx in self.driver.history_all():
+            hist = self.field_history(dbns2tuple(dbns), field, create=True)
+            hist.append(Value(created_at, value is None, None if value is None else decode(value), ctx, seq=seq))
 
         _sort_histories(self.cache)
 
@@ -298,7 +297,7 @@ class Store:
 
         hist = self.field_history(namespace, key, create=True)
         now = time()
-        seq = self.driver.insert(dbns, key, value, ctx, now)
+        seq = self.driver.append(dbns, key, self.codec.encode(value), ctx, now)
 
         new_value = Value(
             now,
@@ -331,7 +330,7 @@ class Store:
             raise AttributeError(f"Key not found: ({dbns}, {key})")
 
         now = time()
-        seq = self.driver.delete(dbns, key, ctx, now)
+        seq = self.driver.append(dbns, key, None, ctx, now)
 
         tombstone = Value(now, True, None, ctx, seq=seq)
 

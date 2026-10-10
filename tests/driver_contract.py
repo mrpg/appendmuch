@@ -188,7 +188,7 @@ class DriverContract:
         s.x = 2
         s.x = 3
 
-        seqs = [v.seq for _, _, v in store.driver.history_all()]
+        seqs = [row[0] for row in store.driver.history_all()]
         assert seqs == sorted(seqs)
         assert len(seqs) == 3
 
