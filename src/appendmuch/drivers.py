@@ -11,7 +11,6 @@ data uses parameterized queries (%s or ?) to prevent SQL injection.
 
 import sqlite3
 import threading
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -69,9 +68,9 @@ class DBDriver(ABC):
     """Stores encoded rows; encoding and decoding values is up to the caller."""
 
     def __init__(self) -> None:
-        # Serializes writes with flushes and dump reads, so that a dump may be
-        # consumed on another thread than the one writing (e.g., streamed by a
-        # web server). It is never held while a dump yields.
+        # Serializes writes with dump reads, so that a dump may be consumed on
+        # another thread than the one writing (e.g., streamed by a web server).
+        # It is never held while a dump yields.
         self.lock = threading.RLock()
         self.seq: int = 0
         # Fields for which the driver MAY keep only the latest row instead of
@@ -120,10 +119,6 @@ class DBDriver(ABC):
 
     @abstractmethod
     def close(self) -> None: ...
-
-    def flush(self) -> None:
-        """Write any buffered rows to durable storage. No-op by default."""
-        return None
 
     def ensure(self) -> bool:
         """Verify connectivity and make sure the schema exists.
@@ -207,8 +202,9 @@ class Memory(DBDriver):
 
 
 class SQLDriver(DBDriver):
-    """Shared implementation for SQL-backed drivers: batched writes,
-    replace-semantics upserts, dump/restore, and history iteration.
+    """Shared implementation for SQL-backed drivers: writes that are committed
+    before append() returns, replace-semantics upserts, dump/restore, and
+    history iteration.
 
     Subclasses provide connection management (``_cursor``) and
     dialect-specific DDL/introspection.
@@ -248,10 +244,6 @@ class SQLDriver(DBDriver):
         self.table_prefix = table_prefix
         self.tblextra = tblextra
         self.replace_index_specs = replace_index_specs or []
-        self.batch_inserts: list[Row] = []
-        self.last_batch_time = time.time()
-        self.batch_size = 100
-        self.batch_timeout = 0.1
         self.dump_batch_size = 1000
 
     @property
@@ -308,30 +300,6 @@ class SQLDriver(DBDriver):
     def _drop_table_sql(self) -> str:
         return f"DROP TABLE IF EXISTS {self.table_name}"
 
-    # -- batching ------------------------------------------------------------
-
-    def flush(self) -> None:
-        """Write any batched rows to the database immediately.
-
-        On failure, the pending batch is left intact so callers may retry or
-        inspect it.
-        """
-        with self.lock:
-            if self.batch_inserts:
-                with self._cursor() as cur:
-                    self._process_batch(cur)
-
-    def _process_batch(self, cur: Any) -> None:
-        if not self.batch_inserts:
-            return
-
-        cur.executemany(self._insert_sql(), self.batch_inserts)
-        self.batch_inserts.clear()
-        self.last_batch_time = time.time()
-
-    def _should_flush_batch(self) -> bool:
-        return len(self.batch_inserts) >= self.batch_size or time.time() - self.last_batch_time >= self.batch_timeout
-
     # -- writes ---------------------------------------------------------------
 
     def append(self, namespace: str, field: str, value: bytes | None, context: str, now: float) -> int:
@@ -339,16 +307,11 @@ class SQLDriver(DBDriver):
             seq = self.next_seq()
             row = (seq, namespace, field, value, now, context)
 
-            if self.replace_predicate(namespace, field):
-                with self._cursor() as cur:
-                    self._process_batch(cur)
+            with self._cursor() as cur:
+                if self.replace_predicate(namespace, field):
                     self._upsert(cur, row)
-            else:
-                self.batch_inserts.append(row)
-
-                if self._should_flush_batch():
-                    with self._cursor() as cur:
-                        self._process_batch(cur)
+                else:
+                    cur.execute(self._insert_sql(), row)
 
             return seq
 
@@ -370,12 +333,9 @@ class SQLDriver(DBDriver):
         last = -1
 
         while True:
-            with self.lock:
-                self.flush()
-
-                with self._cursor() as cur:
-                    cur.execute(self._select_after_sql(), (last, self.dump_batch_size))
-                    rows = cur.fetchall()
+            with self.lock, self._cursor() as cur:
+                cur.execute(self._select_after_sql(), (last, self.dump_batch_size))
+                rows = cur.fetchall()
 
             if not rows:
                 return
@@ -387,8 +347,6 @@ class SQLDriver(DBDriver):
 
     def restore(self, msgpack_stream: Iterable[bytes] | ReadableBytes) -> None:
         with self.lock:
-            self.flush()
-
             batch: list[Row] = []
             upserts: list[Row] = []
 
@@ -404,8 +362,6 @@ class SQLDriver(DBDriver):
                     cur.executemany(self._insert_sql(), batch)
 
     def history_all(self) -> Iterator[Row]:
-        self.flush()
-
         with self._cursor() as cur:
             cur.execute(self._select_all_sql())
             for row in cur:
@@ -413,19 +369,15 @@ class SQLDriver(DBDriver):
                 yield row
 
     def reset(self) -> None:
-        with self.lock:
-            # pending rows would be destroyed together with the table
-            self.batch_inserts.clear()
-
-            with self._cursor() as cur:
-                cur.execute(self._drop_table_sql())
-                cur.execute(self._create_table_sql())
-                for field_val, ns_pattern in self.replace_index_specs:
-                    cur.execute(self._index_sql(field_val, ns_pattern))
+        with self.lock, self._cursor() as cur:
+            cur.execute(self._drop_table_sql())
+            cur.execute(self._create_table_sql())
+            for field_val, ns_pattern in self.replace_index_specs:
+                cur.execute(self._index_sql(field_val, ns_pattern))
 
 
 class PostgreSQL(SQLDriver):
-    """PostgreSQL implementation with connection pooling and batched writes."""
+    """PostgreSQL implementation with connection pooling."""
 
     _param = "%s"
 
@@ -461,7 +413,6 @@ class PostgreSQL(SQLDriver):
 
     def close(self) -> None:
         if getattr(self, "pool", None):
-            self.flush()
             self.pool.close(timeout=5.0)
 
     def test_connection(self) -> None:
@@ -515,7 +466,7 @@ class PostgreSQL(SQLDriver):
 
 
 class Sqlite3(SQLDriver):
-    """SQLite3 implementation with WAL mode and batched writes."""
+    """SQLite3 implementation with WAL mode."""
 
     _param = "?"
 
@@ -556,7 +507,6 @@ class Sqlite3(SQLDriver):
 
     def close(self) -> None:
         if self.connection:
-            self.flush()
             self.connection.close()
             self.connection = None
 

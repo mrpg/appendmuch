@@ -49,10 +49,10 @@ class DriverContract:
         assert s2.y == "hello"
         store2.close()
 
-    def test_batched_writes_survive_reopen(self, driver_factory):
+    def test_many_writes_survive_reopen(self, driver_factory):
         store1 = Store(driver_factory())
         s = store1.storage("ns", "test")
-        for i in range(200):  # exceeds the SQL drivers' batch size
+        for i in range(200):
             s.x = i
         store1.close()
 
@@ -226,11 +226,9 @@ class DriverContract:
         assert seqs == sorted(seqs)
         assert len(seqs) == 3
 
-    def test_flush_makes_writes_visible_to_new_driver(self, driver_factory):
+    def test_write_is_visible_to_new_driver_once_it_returns(self, driver_factory):
         store = Store(driver_factory())
         store.storage("ns", "test").x = 1
-
-        store.flush()
 
         other = driver_factory()
         assert len(list(other.history_all())) == 1
@@ -246,7 +244,6 @@ class SQLDriverContract(DriverContract):
     def test_size_reports_bytes(self, driver_factory):
         store = Store(driver_factory())
         store.storage("ns", "test").x = 1
-        store.flush()
         size = store.driver.size()
         assert isinstance(size, int)
         assert size > 0

@@ -161,10 +161,6 @@ class Store:
     ) -> "Storage":
         return Storage(*namespace, store=self, virtual=virtual)
 
-    def flush(self) -> None:
-        """Force any batched driver writes to durable storage."""
-        self.driver.flush()
-
     def close(self) -> None:
         """Close the underlying driver and release resources."""
         if self._finalizer.detach():

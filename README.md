@@ -200,11 +200,11 @@ Support for other types can be registered using a custom codec. [Example.](https
 - `Sqlite3`: file-backed via SQLite (stdlib)
 - `PostgreSQL`: PostgreSQL with connection pooling (requires `psycopg`; install with `pip install "appendmuch[pg]"`)
 
-The SQL drivers batch writes (flushed after 100 rows or 0.1 s, whichever comes first, and on `close()`). Call `store.flush()` to force pending rows to durable storage at any point.
+The SQL drivers commit every write before it returns, so a write that returned normally survives a crash of your process, and a write that raised was not stored.
 
 Opening a `Store` on an existing database reuses it; the schema is only created when absent. If a table exists but has an incompatible schema, a `RuntimeError` is raised — data is never destroyed implicitly. Call `driver.reset()` explicitly to drop and recreate the schema.
 
-Custom SQL backends can subclass `appendmuch.SQLDriver`, which provides batching, replace-semantics upserts, dump/restore, and history iteration; only connection management and DDL are dialect-specific.
+Custom SQL backends can subclass `appendmuch.SQLDriver`, which provides writes, replace-semantics upserts, dump/restore, and history iteration; only connection management and DDL are dialect-specific.
 
 ## Testing
 
